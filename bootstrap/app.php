@@ -4,7 +4,7 @@ use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
 
-return Application::configure(basePath: dirname(__DIR__))
+$app = Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         api: __DIR__.'/../routes/api.php',
@@ -17,3 +17,11 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withExceptions(function (Exceptions $exceptions): void {
         //
     })->create();
+
+// Allow C:\ and D:\ paths in .env for bootstrap cache (Windows)
+if (PHP_OS_FAMILY === 'Windows') {
+    $app->addAbsoluteCachePathPrefix('C:');
+    $app->addAbsoluteCachePathPrefix('D:');
+}
+
+return $app;
