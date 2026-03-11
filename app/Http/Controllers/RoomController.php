@@ -2,26 +2,28 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\RoomResource;
 use App\Models\Hotel;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Validation\Rule;
 
 class RoomController extends Controller
 {
-    public function index(Hotel $hotel): JsonResponse
+    public function index(Hotel $hotel): AnonymousResourceCollection
     {
         $rooms = $hotel->rooms()->with('roomType')->paginate(15);
 
-        return response()->json($rooms);
+        return RoomResource::collection($rooms);
     }
 
-    public function show(Hotel $hotel, Room $room): JsonResponse
+    public function show(Hotel $hotel, Room $room): RoomResource
     {
         $room->load('roomType');
 
-        return response()->json($room);
+        return new RoomResource($room);
     }
 
     public function store(Request $request, Hotel $hotel): JsonResponse
@@ -32,11 +34,12 @@ class RoomController extends Controller
         ]);
 
         $room = $hotel->rooms()->create($data);
+        $room->load('roomType');
 
-        return response()->json($room->load('roomType'), 201);
+        return (new RoomResource($room))->response()->setStatusCode(201);
     }
 
-    public function update(Request $request, Hotel $hotel, Room $room): JsonResponse
+    public function update(Request $request, Hotel $hotel, Room $room): RoomResource
     {
         $data = $request->validate([
             'room_type_id' => ['sometimes', Rule::exists('room_types', 'id')->where('hotel_id', $room->hotel_id)],
@@ -44,8 +47,9 @@ class RoomController extends Controller
         ]);
 
         $room->update($data);
+        $room->load('roomType');
 
-        return response()->json($room->load('roomType'));
+        return new RoomResource($room);
     }
 
     public function destroy(Hotel $hotel, Room $room): JsonResponse

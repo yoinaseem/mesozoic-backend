@@ -2,22 +2,24 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\HotelResource;
 use App\Models\Hotel;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class HotelController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(): AnonymousResourceCollection
     {
-        return response()->json(Hotel::paginate(15));
+        return HotelResource::collection(Hotel::paginate(15));
     }
 
-    public function show(Hotel $hotel): JsonResponse
+    public function show(Hotel $hotel): HotelResource
     {
-        $hotel->load(['rooms', 'roomTypes']);
+        $hotel->load(['roomTypes' => fn ($q) => $q->withCount('rooms')]);
 
-        return response()->json($hotel);
+        return new HotelResource($hotel);
     }
 
     public function store(Request $request): JsonResponse
@@ -33,10 +35,10 @@ class HotelController extends Controller
 
         $hotel = Hotel::create($data);
 
-        return response()->json($hotel, 201);
+        return (new HotelResource($hotel))->response()->setStatusCode(201);
     }
 
-    public function update(Request $request, Hotel $hotel): JsonResponse
+    public function update(Request $request, Hotel $hotel): HotelResource
     {
         $data = $request->validate([
             'name'        => ['sometimes', 'string', 'max:255'],
@@ -49,7 +51,7 @@ class HotelController extends Controller
 
         $hotel->update($data);
 
-        return response()->json($hotel);
+        return new HotelResource($hotel);
     }
 
     public function destroy(Hotel $hotel): JsonResponse

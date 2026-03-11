@@ -2,25 +2,27 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\RoomTypeResource;
 use App\Models\Hotel;
 use App\Models\RoomType;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class RoomTypeController extends Controller
 {
-    public function index(Hotel $hotel): JsonResponse
+    public function index(Hotel $hotel): AnonymousResourceCollection
     {
-        $roomTypes = $hotel->roomTypes()->with('rooms')->paginate(15);
+        $roomTypes = $hotel->roomTypes()->withCount('rooms')->paginate(15);
 
-        return response()->json($roomTypes);
+        return RoomTypeResource::collection($roomTypes);
     }
 
-    public function show(Hotel $hotel, RoomType $roomType): JsonResponse
+    public function show(Hotel $hotel, RoomType $roomType): RoomTypeResource
     {
-        $roomType->load('rooms');
+        $roomType->loadCount('rooms');
 
-        return response()->json($roomType);
+        return new RoomTypeResource($roomType);
     }
 
     public function store(Request $request, Hotel $hotel): JsonResponse
@@ -36,11 +38,12 @@ class RoomTypeController extends Controller
         ]);
 
         $roomType = $hotel->roomTypes()->create($data);
+        $roomType->rooms_count = 0;
 
-        return response()->json($roomType->load('rooms'), 201);
+        return (new RoomTypeResource($roomType))->response()->setStatusCode(201);
     }
 
-    public function update(Request $request, Hotel $hotel, RoomType $roomType): JsonResponse
+    public function update(Request $request, Hotel $hotel, RoomType $roomType): RoomTypeResource
     {
         $data = $request->validate([
             'name'        => ['sometimes', 'string', 'max:255'],
@@ -53,8 +56,9 @@ class RoomTypeController extends Controller
         ]);
 
         $roomType->update($data);
+        $roomType->loadCount('rooms');
 
-        return response()->json($roomType->load('rooms'));
+        return new RoomTypeResource($roomType);
     }
 
     public function destroy(Hotel $hotel, RoomType $roomType): JsonResponse
