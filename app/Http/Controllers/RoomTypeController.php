@@ -2,30 +2,30 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Hotel;
 use App\Models\RoomType;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 class RoomTypeController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Hotel $hotel): JsonResponse
     {
-        $roomTypes = RoomType::with(['hotel', 'rooms'])->get();
+        $roomTypes = $hotel->roomTypes()->with('rooms')->paginate(15);
 
         return response()->json($roomTypes);
     }
 
-    public function show(RoomType $roomType): JsonResponse
+    public function show(Hotel $hotel, RoomType $roomType): JsonResponse
     {
-        $roomType->load(['hotel', 'rooms']);
+        $roomType->load('rooms');
 
         return response()->json($roomType);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, Hotel $hotel): JsonResponse
     {
         $data = $request->validate([
-            'hotel_id'    => ['required', 'exists:hotels,id'],
             'name'        => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'image'       => ['nullable', 'string', 'max:255'],
@@ -35,19 +35,18 @@ class RoomTypeController extends Controller
             'amenities.*' => ['string'],
         ]);
 
-        $roomType = RoomType::create($data);
+        $roomType = $hotel->roomTypes()->create($data);
 
-        return response()->json($roomType->load(['hotel', 'rooms']), 201);
+        return response()->json($roomType->load('rooms'), 201);
     }
 
-    public function update(Request $request, RoomType $roomType): JsonResponse
+    public function update(Request $request, Hotel $hotel, RoomType $roomType): JsonResponse
     {
         $data = $request->validate([
-            'hotel_id'    => ['sometimes', 'exists:hotels,id'],
             'name'        => ['sometimes', 'string', 'max:255'],
             'description' => ['sometimes', 'nullable', 'string'],
             'image'       => ['sometimes', 'nullable', 'string', 'max:255'],
-            'capacity'    => ['sometimes', 'nullable', 'integer', 'min:0'],
+            'capacity'    => ['sometimes', 'nullable', 'integer', 'min:1'],
             'price'       => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'amenities'   => ['sometimes', 'nullable', 'array'],
             'amenities.*' => ['string'],
@@ -55,10 +54,10 @@ class RoomTypeController extends Controller
 
         $roomType->update($data);
 
-        return response()->json($roomType->load(['hotel', 'rooms']));
+        return response()->json($roomType->load('rooms'));
     }
 
-    public function destroy(RoomType $roomType): JsonResponse
+    public function destroy(Hotel $hotel, RoomType $roomType): JsonResponse
     {
         $roomType->delete();
 

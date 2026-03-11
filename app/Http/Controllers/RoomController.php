@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Hotel;
 use App\Models\Room;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -9,47 +10,45 @@ use Illuminate\Validation\Rule;
 
 class RoomController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(Hotel $hotel): JsonResponse
     {
-        $rooms = Room::with(['hotel', 'roomType'])->get();
+        $rooms = $hotel->rooms()->with('roomType')->paginate(15);
 
         return response()->json($rooms);
     }
 
-    public function show(Room $room): JsonResponse
+    public function show(Hotel $hotel, Room $room): JsonResponse
     {
-        $room->load(['hotel', 'roomType']);
+        $room->load('roomType');
 
         return response()->json($room);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, Hotel $hotel): JsonResponse
     {
         $data = $request->validate([
-            'hotel_id'     => ['required', 'exists:hotels,id'],
-            'room_type_id' => ['required', 'exists:room_types,id'],
-            'room_no'      => ['required', 'string', 'max:255', Rule::unique('rooms')->where('hotel_id', $request->hotel_id)],
+            'room_type_id' => ['required', Rule::exists('room_types', 'id')->where('hotel_id', $hotel->id)],
+            'room_no'      => ['required', 'string', 'max:255', Rule::unique('rooms')->where('hotel_id', $hotel->id)],
         ]);
 
-        $room = Room::create($data);
+        $room = $hotel->rooms()->create($data);
 
-        return response()->json($room->load(['hotel', 'roomType']), 201);
+        return response()->json($room->load('roomType'), 201);
     }
 
-    public function update(Request $request, Room $room): JsonResponse
+    public function update(Request $request, Hotel $hotel, Room $room): JsonResponse
     {
         $data = $request->validate([
-            'hotel_id'     => ['sometimes', 'exists:hotels,id'],
-            'room_type_id' => ['sometimes', 'exists:room_types,id'],
-            'room_no'      => ['sometimes', 'string', 'max:255', Rule::unique('rooms')->where('hotel_id', $request->hotel_id)->ignore($room->id)],
+            'room_type_id' => ['sometimes', Rule::exists('room_types', 'id')->where('hotel_id', $room->hotel_id)],
+            'room_no'      => ['sometimes', 'string', 'max:255', Rule::unique('rooms')->where('hotel_id', $room->hotel_id)->ignore($room->id)],
         ]);
 
         $room->update($data);
 
-        return response()->json($room->load(['hotel', 'roomType']));
+        return response()->json($room->load('roomType'));
     }
 
-    public function destroy(Room $room): JsonResponse
+    public function destroy(Hotel $hotel, Room $room): JsonResponse
     {
         $room->delete();
 

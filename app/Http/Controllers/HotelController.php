@@ -10,7 +10,7 @@ class HotelController extends Controller
 {
     public function index(): JsonResponse
     {
-        return response()->json(Hotel::all());
+        return response()->json(Hotel::paginate(15));
     }
 
     public function show(Hotel $hotel): JsonResponse
