@@ -17,6 +17,7 @@ return new class extends Migration
             $table->foreignId('room_type_id')->constrained()->cascadeOnDelete();
             $table->string('room_no');
             $table->timestamps();
+            $table->unique(['hotel_id', 'room_no']);
         });
     }
 

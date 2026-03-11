@@ -29,7 +29,7 @@ class RoomTypeController extends Controller
             'name'        => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'image'       => ['nullable', 'string', 'max:255'],
-            'capacity'    => ['nullable', 'integer', 'min:0'],
+            'capacity'    => ['nullable', 'integer', 'min:1'],
             'price'       => ['nullable', 'numeric', 'min:0'],
             'amenities'   => ['nullable', 'array'],
             'amenities.*' => ['string'],
