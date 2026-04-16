@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
+use App\Http\Resources\UserResource;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -20,10 +21,11 @@ class AuthController extends Controller
         ]);
 
         $user = User::create($data);
+        $user->assignRole('customer');
 
         return response()->json([
             'token' => $user->createToken('api')->plainTextToken,
-            'user'  => $user,
+            'user'  => new UserResource($user),
         ], 201);
     }
 
@@ -44,7 +46,7 @@ class AuthController extends Controller
 
         return response()->json([
             'token' => $user->createToken('api')->plainTextToken,
-            'user'  => $user,
+            'user'  => new UserResource($user),
         ]);
     }
 
@@ -55,8 +57,8 @@ class AuthController extends Controller
         return response()->json(['message' => 'Logged out successfully.']);
     }
 
-    public function me(Request $request): JsonResponse
+    public function me(Request $request): UserResource
     {
-        return response()->json($request->user());
+        return new UserResource($request->user());
     }
 }

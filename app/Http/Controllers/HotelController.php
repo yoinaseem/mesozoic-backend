@@ -4,12 +4,15 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\HotelResource;
 use App\Models\Hotel;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class HotelController extends Controller
 {
+    use AuthorizesRequests;
+
     public function index(): AnonymousResourceCollection
     {
         return HotelResource::collection(Hotel::paginate(15));
@@ -24,6 +27,11 @@ class HotelController extends Controller
 
     public function store(Request $request): JsonResponse
     {
+        // Route middleware already requires `hotels.create` (superadmin only),
+        // but the policy's before() is the ultimate gate — authorize anyway so
+        // the contract is explicit.
+        $this->authorize('create', Hotel::class);
+
         $data = $request->validate([
             'name'        => ['required', 'string', 'max:255'],
             'address'     => ['required', 'string', 'max:255'],
@@ -40,6 +48,8 @@ class HotelController extends Controller
 
     public function update(Request $request, Hotel $hotel): HotelResource
     {
+        $this->authorize('update', $hotel);
+
         $data = $request->validate([
             'name'        => ['sometimes', 'string', 'max:255'],
             'address'     => ['sometimes', 'nullable', 'string', 'max:255'],
@@ -56,6 +66,8 @@ class HotelController extends Controller
 
     public function destroy(Hotel $hotel): JsonResponse
     {
+        $this->authorize('delete', $hotel);
+
         $hotel->delete();
 
         return response()->json(null, 204);

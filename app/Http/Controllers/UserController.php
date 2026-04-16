@@ -2,24 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\UserResource;
 use App\Models\User;
+use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class UserController extends Controller
 {
-    public function index(): JsonResponse
+    use AuthorizesRequests;
+
+    public function index(): AnonymousResourceCollection
     {
-        return response()->json(User::all());
+        $this->authorize('viewAny', User::class);
+
+        return UserResource::collection(User::all());
     }
 
-    public function show(User $user): JsonResponse
+    public function show(User $user): UserResource
     {
-        return response()->json($user);
+        $this->authorize('view', $user);
+
+        return new UserResource($user);
     }
 
     public function store(Request $request): JsonResponse
     {
+        $this->authorize('create', User::class);
+
         $data = $request->validate([
             'name'     => ['required', 'string', 'max:255'],
             'email'    => ['required', 'email', 'unique:users,email'],
@@ -28,11 +39,13 @@ class UserController extends Controller
 
         $user = User::create($data);
 
-        return response()->json($user, 201);
+        return (new UserResource($user))->response()->setStatusCode(201);
     }
 
-    public function update(Request $request, User $user): JsonResponse
+    public function update(Request $request, User $user): UserResource
     {
+        $this->authorize('update', $user);
+
         $data = $request->validate([
             'name'     => ['sometimes', 'string', 'max:255'],
             'email'    => ['sometimes', 'email', 'unique:users,email,' . $user->id],
@@ -41,11 +54,13 @@ class UserController extends Controller
 
         $user->update($data);
 
-        return response()->json($user);
+        return new UserResource($user);
     }
 
     public function destroy(User $user): JsonResponse
     {
+        $this->authorize('delete', $user);
+
         $user->delete();
 
         return response()->json(null, 204);

@@ -7,29 +7,40 @@ use App\Http\Controllers\RoomTypeController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
-Route::apiResource('users', UserController::class);
-
-Route::prefix('auth')->group(function () {
-    Route::post('register', [AuthController::class, 'register']);
-    Route::post('login', [AuthController::class, 'login']);
-
-    Route::middleware('auth:sanctum')->group(function () {
-        Route::post('logout', [AuthController::class, 'logout']);
-        Route::get('me', [AuthController::class, 'me']);
-    });
-});
-
-// Hotels – read-only public, mutations protected
+// Public reads — hotels, room-types, and rooms are browsable without auth.
 Route::apiResource('hotels', HotelController::class)->only(['index', 'show']);
-Route::middleware('auth:sanctum')->apiResource('hotels', HotelController::class)->except(['index', 'show']);
-
-// Room types & rooms – nested under hotels, scoped bindings
 Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
     Route::apiResource('room-types', RoomTypeController::class)->only(['index', 'show']);
-    Route::apiResource('rooms', RoomController::class)->only(['index', 'show']);
+    Route::apiResource('rooms',      RoomController::class)->only(['index', 'show']);
+});
 
-    Route::middleware('auth:sanctum')->group(function () {
-        Route::apiResource('room-types', RoomTypeController::class)->except(['index', 'show']);
-        Route::apiResource('rooms', RoomController::class)->except(['index', 'show']);
+// Auth entry points.
+Route::post('/auth/register', [AuthController::class, 'register']);
+Route::post('/auth/login',    [AuthController::class, 'login']);
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/auth/logout', [AuthController::class, 'logout']);
+    Route::get('/auth/me',      [AuthController::class, 'me']);
+
+    // Users — UserPolicy gates every verb (superadmin-only + self-access).
+    Route::apiResource('users', UserController::class);
+
+    // Hotel mutations — each verb gets its specific permission on the route,
+    // then HotelPolicy re-checks on a per-hotel basis for update (scope).
+    Route::post('/hotels', [HotelController::class, 'store'])
+        ->middleware('permission:hotels.create');
+    Route::match(['put', 'patch'], '/hotels/{hotel}', [HotelController::class, 'update'])
+        ->middleware('permission:hotels.update');
+    Route::delete('/hotels/{hotel}', [HotelController::class, 'destroy'])
+        ->middleware('permission:hotels.delete');
+
+    // Nested room-type and room mutations — pipe = OR (any of the three
+    // permissions lets the request through the middleware); the per-verb
+    // check happens inside the Policy.
+    Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
+        Route::apiResource('room-types', RoomTypeController::class)->except(['index', 'show'])
+            ->middleware('permission:room-types.create|room-types.update|room-types.delete');
+        Route::apiResource('rooms', RoomController::class)->except(['index', 'show'])
+            ->middleware('permission:rooms.create|rooms.update|rooms.delete');
     });
 });

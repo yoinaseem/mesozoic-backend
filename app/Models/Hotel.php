@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 
 class Hotel extends Model
 {
@@ -29,5 +30,13 @@ class Hotel extends Model
     public function roomTypes()
     {
         return $this->hasMany(RoomType::class);
+    }
+
+    /**
+     * Users assigned to manage this hotel (scoped RBAC).
+     */
+    public function managers(): BelongsToMany
+    {
+        return $this->belongsToMany(User::class)->withTimestamps();
     }
 }
