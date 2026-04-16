@@ -8,18 +8,26 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('ferries', function (Blueprint $table) {
+        Schema::create('ferry_schedules', function (Blueprint $table) {
             $table->id();
-            $table->string('name');
-            $table->text('description')->nullable();
-            $table->decimal('price', 10, 2)->default(0);
-            $table->unsignedInteger('capacity')->default(1);
-            $table->string('image')->nullable();
+            $table->foreignId('ferry_id')->constrained()->cascadeOnDelete();
+            $table->date('travel_date');
+            $table->time('departure_time');
+            $table->time('arrival_time');
+            $table->string('departure_port');
+            $table->string('arrival_port');
+            $table->enum('status', ['scheduled', 'completed', 'cancelled'])->default('scheduled');
             $table->timestamps();
+
+            $table->index('ferry_id');
+            $table->index('travel_date');
+            $table->index('status');
+            $table->unique(['ferry_id', 'travel_date', 'departure_time'], 'ferry_schedule_unique_departure');
         });
     }
+
     public function down(): void
     {
-        Schema::dropIfExists('ferries');
+        Schema::dropIfExists('ferry_schedules');
     }
 };
