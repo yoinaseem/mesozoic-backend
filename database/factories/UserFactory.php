@@ -2,12 +2,13 @@
 
 namespace Database\Factories;
 
+use App\Models\User;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Str;
 
 /**
- * @extends \Illuminate\Database\Eloquent\Factories\Factory<\App\Models\User>
+ * @extends Factory<User>
  */
 class UserFactory extends Factory
 {
@@ -40,5 +41,35 @@ class UserFactory extends Factory
         return $this->state(fn (array $attributes) => [
             'email_verified_at' => null,
         ]);
+    }
+
+    public function superadmin(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('superadmin'));
+    }
+
+    public function hotelManager(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('hotel-manager'));
+    }
+
+    public function ferryManager(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('ferry-manager'));
+    }
+
+    public function parkManager(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('park-manager'));
+    }
+
+    public function beachManager(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('beach-manager'));
+    }
+
+    public function customer(): static
+    {
+        return $this->afterCreating(fn (User $user) => $user->assignRole('customer'));
     }
 }

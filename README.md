@@ -1,59 +1,74 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Mesozoic Isle — Backend
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 12 API for the Mesozoic Isle hotel/ferry/park/beach management system.
 
-## About Laravel
+## Authorization (RBAC)
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+Authentication is handled by Laravel Sanctum (bearer tokens). Authorization
+layers **spatie/laravel-permission** on top: a role-based permission check at
+the route level, plus per-resource policies for scoped rules (e.g. "this
+hotel-manager only edits hotels they're assigned to").
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+### Roles
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
+| Role            | Intended for                                                                                                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `superadmin`    | Full access to everything; can create/delete any resource.                                                                                                               |
+| `hotel-manager` | Manages a specific set of hotels (via `hotel_user` pivot) — can view/update their hotels and do full CRUD on their room types and rooms. Cannot create or delete hotels. |
+| `ferry-manager` | View/update ferry resources (module pending).                                                                                                                            |
+| `park-manager`  | View/update park resources (module pending).                                                                                                                             |
+| `beach-manager` | View/update beach resources (module pending).                                                                                                                            |
+| `customer`      | Default role for self-registered users. No management permissions.                                                                                                       |
 
-## Learning Laravel
+### Permissions catalogue
 
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework. You can also check out [Laravel Learn](https://laravel.com/learn), where you will be guided through building a modern Laravel application.
+Flat `resource.action` strings seeded by `RolesAndPermissionsSeeder`:
 
-If you don't feel like reading, [Laracasts](https://laracasts.com) can help. Laracasts contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
+- **Hotels:** `hotels.{view,create,update,delete}`
+- **Room types:** `room-types.{view,create,update,delete}`
+- **Rooms:** `rooms.{view,create,update,delete}`
+- **Users:** `users.{view,create,update,delete}`
+- **Ferry (pending):** `ferry.{view,create,update,delete}`
+- **Park (pending):** `park.{view,create,update,delete}`
+- **Beach (pending):** `beach.{view,create,update,delete}`
+- **Bookings (pending):** `bookings.{view,create,update,delete,cancel}`
 
-## Laravel Sponsors
+Mutations on protected routes are guarded with `permission:<name>` middleware.
+Where a rule depends on a specific resource instance (e.g. hotel-manager must
+manage _this_ hotel), the `HotelPolicy` / `RoomPolicy` / `RoomTypePolicy` /
+`UserPolicy` perform the per-instance check.
 
-We would like to extend our thanks to the following sponsors for funding Laravel development. If you are interested in becoming a sponsor, please visit the [Laravel Partners program](https://partners.laravel.com).
+### Scoped hotel assignments
 
-### Premium Partners
+Hotel-managers are linked to specific hotels via the `hotel_user` pivot table.
+Use `$user->managedHotels` or `$user->managesHotel($hotel)` to inspect
+assignments. Superadmins bypass the scope check entirely (every policy's
+`before()` method returns `true` for them).
 
-- **[Vehikl](https://vehikl.com)**
-- **[Tighten Co.](https://tighten.co)**
-- **[Kirschbaum Development Group](https://kirschbaumdevelopment.com)**
-- **[64 Robots](https://64robots.com)**
-- **[Curotec](https://www.curotec.com/services/technologies/laravel)**
-- **[DevSquad](https://devsquad.com/hire-laravel-developers)**
-- **[Redberry](https://redberry.international/laravel-development)**
-- **[Active Logic](https://activelogic.com)**
+### Dev account credentials
 
-## Contributing
+`DevUsersSeeder` runs automatically via `php artisan migrate:fresh --seed` in
+the `local` and `testing` environments. **Each account's password is its own
+email address** (e.g. `superadmin@mesozoic.test` logs in with password
+`superadmin@mesozoic.test`) — makes copy/paste during manual API testing and
+frontend demos painless.
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+| Email                         | Role            | Notes                                          |
+| ----------------------------- | --------------- | ---------------------------------------------- |
+| `superadmin@mesozoic.test`    | `superadmin`    | Full access.                                   |
+| `hotel-manager@mesozoic.test` | `hotel-manager` | Assigned to "Mesozoic Grand Hotel" (hotel #1). |
+| `ferry-manager@mesozoic.test` | `ferry-manager` |                                                |
+| `park-manager@mesozoic.test`  | `park-manager`  |                                                |
+| `beach-manager@mesozoic.test` | `beach-manager` |                                                |
+| `customer@mesozoic.test`      | `customer`      | Default role for self-registration.            |
 
-## Code of Conduct
+Production environments seed the roles/permissions catalogue only — no fixture
+users are created.
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+### Register / login / me response shape
 
-## Security Vulnerabilities
-
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
-
-## License
-
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+`/api/auth/register`, `/api/auth/login`, and `/api/auth/me` all return a
+`UserResource` payload including `roles` (array of role names) and
+`permissions` (flat array of permission strings). Frontend clients should read
+those to drive UI gating. Newly-registered users are assigned the `customer`
+role automatically.

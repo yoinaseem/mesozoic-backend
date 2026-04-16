@@ -1,5 +1,9 @@
 <?php
 
+use Database\Seeders\RolesAndPermissionsSeeder;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+use Spatie\Permission\PermissionRegistrar;
+
 /*
 |--------------------------------------------------------------------------
 | Test Case
@@ -12,7 +16,15 @@
 */
 
 pest()->extend(Tests\TestCase::class)
- // ->use(Illuminate\Foundation\Testing\RefreshDatabase::class)
+    ->use(RefreshDatabase::class)
+    ->beforeEach(function () {
+        // Spatie caches role/permission lookups in-process; RefreshDatabase
+        // resets the DB but not this cache, so stale IDs from prior tests
+        // leak into the next one. Flush before seeding each test.
+        app(PermissionRegistrar::class)->forgetCachedPermissions();
+
+        $this->seed(RolesAndPermissionsSeeder::class);
+    })
     ->in('Feature');
 
 /*
