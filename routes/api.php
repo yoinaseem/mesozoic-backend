@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\FerryController;
+use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
@@ -43,4 +45,14 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::apiResource('rooms', RoomController::class)->except(['index', 'show'])
             ->middleware('permission:rooms.create|rooms.update|rooms.delete');
     });
+});
+
+// Ferries & schedules – read-only public, mutations protected (same pattern as hotels)
+Route::get('ferries/{ferry}/schedules', [FerryScheduleController::class, 'indexForFerry']);
+Route::apiResource('ferries', FerryController::class)->only(['index', 'show']);
+Route::apiResource('ferry-schedules', FerryScheduleController::class)->only(['index', 'show']);
+
+Route::middleware('auth:sanctum')->group(function () {
+    Route::apiResource('ferries', FerryController::class)->except(['index', 'show']);
+    Route::apiResource('ferry-schedules', FerryScheduleController::class)->except(['index', 'show']);
 });
