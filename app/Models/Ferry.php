@@ -24,10 +24,9 @@ class Ferry extends Model
             'capacity' => 'integer',
         ];
     }
+
     public function schedules()
     {
         return $this->hasMany(FerrySchedule::class);
     }
 }
-
-

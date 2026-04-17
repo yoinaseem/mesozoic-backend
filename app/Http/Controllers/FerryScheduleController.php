@@ -7,6 +7,8 @@ use App\Models\FerrySchedule;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Unique;
+use Illuminate\Validation\ValidationException;
 
 class FerryScheduleController extends Controller
 {
@@ -37,17 +39,16 @@ class FerryScheduleController extends Controller
             'departure_time' => [
                 'required',
                 'date_format:H:i:s',
-                $this->uniqueDepartureRule($request),
+                $this->uniqueDepartureRule($request->input('ferry_id'), $request->input('travel_date')),
             ],
-            'arrival_time' => ['required', 'date_format:H:i:s', 'after:departure_time'],
+            'arrival_date' => ['required', 'date', 'after_or_equal:travel_date'],
+            'arrival_time' => ['required', 'date_format:H:i:s'],
             'departure_port' => ['required', 'string', 'max:255'],
             'arrival_port' => ['required', 'string', 'max:255'],
             'status' => ['sometimes', Rule::in(['scheduled', 'completed', 'cancelled'])],
         ]);
 
-        if (! array_key_exists('status', $data)) {
-            $data['status'] = 'scheduled';
-        }
+        $this->validateArrivalAfterDeparture($data);
 
         $schedule = FerrySchedule::create($data);
 
@@ -58,13 +59,6 @@ class FerryScheduleController extends Controller
     {
         $ferryId = $request->input('ferry_id', $ferrySchedule->ferry_id);
         $travelDate = $request->input('travel_date', $ferrySchedule->travel_date?->format('Y-m-d'));
-        $departureTime = $request->input('departure_time', $ferrySchedule->departure_time);
-
-        $request->merge([
-            'ferry_id' => $ferryId,
-            'travel_date' => $travelDate,
-            'departure_time' => $departureTime,
-        ]);
 
         $data = $request->validate([
             'ferry_id' => ['sometimes', 'exists:ferries,id'],
@@ -72,13 +66,21 @@ class FerryScheduleController extends Controller
             'departure_time' => [
                 'sometimes',
                 'date_format:H:i:s',
-                $this->uniqueDepartureRule($request, $ferrySchedule->id),
+                $this->uniqueDepartureRule($ferryId, $travelDate, $ferrySchedule->id),
             ],
-            'arrival_time' => ['sometimes', 'date_format:H:i:s', 'after:departure_time'],
+            'arrival_date' => ['sometimes', 'date', 'after_or_equal:travel_date'],
+            'arrival_time' => ['sometimes', 'date_format:H:i:s'],
             'departure_port' => ['sometimes', 'string', 'max:255'],
             'arrival_port' => ['sometimes', 'string', 'max:255'],
             'status' => ['sometimes', Rule::in(['scheduled', 'completed', 'cancelled'])],
         ]);
+
+        $this->validateArrivalAfterDeparture(array_merge([
+            'travel_date'    => $ferrySchedule->travel_date?->format('Y-m-d'),
+            'departure_time' => $ferrySchedule->departure_time,
+            'arrival_date'   => $ferrySchedule->arrival_date?->format('Y-m-d'),
+            'arrival_time'   => $ferrySchedule->arrival_time,
+        ], $data));
 
         $ferrySchedule->update($data);
 
@@ -92,18 +94,27 @@ class FerryScheduleController extends Controller
         return response()->json(null, 204);
     }
 
-    private function uniqueDepartureRule(Request $request, ?int $ignoreId = null): \Illuminate\Validation\Rules\Unique
+    /**
+     * Ensure arrival datetime is after departure datetime.
+     * Works correctly for overnight and multi-day schedules.
+     */
+    private function validateArrivalAfterDeparture(array $data): void
     {
-        $rule = Rule::unique('ferry_schedules', 'departure_time')->where(function ($query) use ($request) {
-            return $query
-                ->where('ferry_id', $request->input('ferry_id'))
-                ->whereDate('travel_date', $request->input('travel_date'));
-        });
+        $departure = strtotime($data['travel_date'] . ' ' . $data['departure_time']);
+        $arrival = strtotime($data['arrival_date'] . ' ' . $data['arrival_time']);
 
-        if ($ignoreId !== null) {
-            $rule->ignore($ignoreId);
+        if ($arrival !== false && $departure !== false && $arrival <= $departure) {
+            throw ValidationException::withMessages([
+                'arrival_time' => ['The arrival datetime must be after the departure datetime.'],
+            ]);
         }
+    }
 
-        return $rule;
+    private function uniqueDepartureRule(mixed $ferryId, mixed $travelDate, ?int $ignoreId = null): Unique
+    {
+        $rule = Rule::unique('ferry_schedules', 'departure_time')
+            ->where(fn ($query) => $query->where('ferry_id', $ferryId)->whereDate('travel_date', $travelDate));
+
+        return $ignoreId ? $rule->ignore($ignoreId) : $rule;
     }
 }
