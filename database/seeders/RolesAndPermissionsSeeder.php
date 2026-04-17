@@ -62,7 +62,7 @@ class RolesAndPermissionsSeeder extends Seeder
         // to superadmin until those modules have proper pivot-scoped ownership.
         $ferryManager->syncPermissions(['ferry.view', 'ferry.update']);
         $parkManager->syncPermissions(['park.view', 'park.update']);
-        $beachManager->syncPermissions(['beach.view', 'beach.update']);
+        $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
 
         // Customer exists purely so self-registration has a default role to bind.
         $customer->syncPermissions([]);

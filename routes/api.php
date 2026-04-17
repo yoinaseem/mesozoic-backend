@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\BeachActivityController;
+use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
@@ -12,6 +14,12 @@ Route::apiResource('hotels', HotelController::class)->only(['index', 'show']);
 Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
     Route::apiResource('room-types', RoomTypeController::class)->only(['index', 'show']);
     Route::apiResource('rooms',      RoomController::class)->only(['index', 'show']);
+});
+
+// Public reads — beach activities and schedules are browsable without auth.
+Route::apiResource('beach-activities', BeachActivityController::class)->only(['index', 'show']);
+Route::scopeBindings()->prefix('beach-activities/{beach_activity}')->group(function () {
+    Route::apiResource('schedules', BeachActivityScheduleController::class)->only(['index', 'show']);
 });
 
 // Auth entry points.
@@ -42,5 +50,19 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('permission:room-types.create|room-types.update|room-types.delete');
         Route::apiResource('rooms', RoomController::class)->except(['index', 'show'])
             ->middleware('permission:rooms.create|rooms.update|rooms.delete');
+    });
+
+    // Beach activity mutations
+    Route::post('/beach-activities', [BeachActivityController::class, 'store'])
+        ->middleware('permission:beach.create');
+    Route::match(['put', 'patch'], '/beach-activities/{beach_activity}', [BeachActivityController::class, 'update'])
+        ->middleware('permission:beach.update');
+    Route::delete('/beach-activities/{beach_activity}', [BeachActivityController::class, 'destroy'])
+        ->middleware('permission:beach.delete');
+
+    // Nested schedule mutations
+    Route::scopeBindings()->prefix('beach-activities/{beach_activity}')->group(function () {
+        Route::apiResource('schedules', BeachActivityScheduleController::class)->except(['index', 'show'])
+            ->middleware('permission:beach.create|beach.update|beach.delete');
     });
 });
