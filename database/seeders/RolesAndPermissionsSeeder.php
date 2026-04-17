@@ -58,11 +58,12 @@ class RolesAndPermissionsSeeder extends Seeder
             'rooms.view', 'rooms.create', 'rooms.update', 'rooms.delete',
         ]);
 
-        // Module managers get view + update on their module. Create/delete deferred
-        // to superadmin until those modules have proper pivot-scoped ownership.
-        $ferryManager->syncPermissions(['ferry.view', 'ferry.update']);
-        $parkManager->syncPermissions(['park.view', 'park.update']);
-        $beachManager->syncPermissions(['beach.view', 'beach.update']);
+        // Module managers get view, create, and update on their module. Delete stays
+        // with superadmin. Unlike hotel-manager (which is pivot-scoped), these roles
+        // manage all resources in their module without per-instance ownership.
+        $ferryManager->syncPermissions(['ferry.view', 'ferry.create', 'ferry.update']);
+        $parkManager->syncPermissions(['park.view', 'park.create', 'park.update']);
+        $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
 
         // Customer exists purely so self-registration has a default role to bind.
         $customer->syncPermissions([]);
