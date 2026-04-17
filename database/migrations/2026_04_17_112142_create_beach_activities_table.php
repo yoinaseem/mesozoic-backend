@@ -11,10 +11,10 @@ return new class extends Migration
         Schema::create('beach_activities', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->text('description')->nullable(); 
+            $table->text('description')->nullable();
             $table->decimal('price', 10, 2)->default(0);
             $table->unsignedInteger('capacity')->default(1);
-            $table->unsignedInteger('duration'); 
+            $table->unsignedInteger('duration');
             $table->string('image')->nullable();
             $table->timestamps();
         });

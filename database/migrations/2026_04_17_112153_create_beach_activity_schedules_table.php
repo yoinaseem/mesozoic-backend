@@ -16,7 +16,6 @@ return new class extends Migration
             $table->enum('status', ['pending', 'confirmed', 'cancelled'])->default('pending');
             $table->timestamps();
 
-            $table->index('beach_activity_id');
             $table->index('activity_date');
             $table->index('status');
             $table->unique(
