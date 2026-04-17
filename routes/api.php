@@ -6,6 +6,10 @@ use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\BeachActivityController;
 use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelController;
+use App\Http\Controllers\ParkActivityController;
+use App\Http\Controllers\ParkActivityScheduleController;
+use App\Http\Controllers\ParkOpeningHourController;
+use App\Http\Controllers\ThemeParkController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
 use App\Http\Controllers\UserController;
@@ -22,6 +26,20 @@ Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
 Route::apiResource('beach-activities', BeachActivityController::class)->only(['index', 'show']);
 Route::scopeBindings()->prefix('beach-activities/{beach_activity}')->group(function () {
     Route::apiResource('schedules', BeachActivityScheduleController::class)->only(['index', 'show']);
+});
+
+// Public reads — theme parks, opening hours, activities, and schedules.
+Route::apiResource('theme-parks', ThemeParkController::class)->only(['index', 'show']);
+Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
+    Route::apiResource('opening-hours', ParkOpeningHourController::class)->only(['index', 'show']);
+    Route::apiResource('activities', ParkActivityController::class)
+        ->parameters(['activities' => 'park_activity'])
+        ->only(['index', 'show']);
+});
+Route::scopeBindings()->prefix('theme-parks/{theme_park}/activities/{park_activity}')->group(function () {
+    Route::apiResource('schedules', ParkActivityScheduleController::class)
+        ->only(['index', 'show'])
+        ->names('park-activity-schedules');
 });
 
 // Auth entry points.
@@ -66,6 +84,37 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::scopeBindings()->prefix('beach-activities/{beach_activity}')->group(function () {
         Route::apiResource('schedules', BeachActivityScheduleController::class)->except(['index', 'show'])
             ->middleware('permission:beach.create|beach.update|beach.delete');
+    });
+
+    // Theme park mutations (flat + nested; policies + middleware use park.*).
+    Route::post('/theme-parks', [ThemeParkController::class, 'store'])
+        ->middleware('permission:park.create');
+    Route::match(['put', 'patch'], '/theme-parks/{theme_park}', [ThemeParkController::class, 'update'])
+        ->middleware('permission:park.update');
+    Route::delete('/theme-parks/{theme_park}', [ThemeParkController::class, 'destroy'])
+        ->middleware('permission:park.delete');
+
+    Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
+        Route::post('/opening-hours', [ParkOpeningHourController::class, 'store'])
+            ->middleware('permission:park.create');
+        Route::match(['put', 'patch'], '/opening-hours/{opening_hour}', [ParkOpeningHourController::class, 'update'])
+            ->middleware('permission:park.update');
+        Route::delete('/opening-hours/{opening_hour}', [ParkOpeningHourController::class, 'destroy'])
+            ->middleware('permission:park.delete');
+
+        Route::post('/activities', [ParkActivityController::class, 'store'])
+            ->middleware('permission:park.create');
+        Route::match(['put', 'patch'], '/activities/{park_activity}', [ParkActivityController::class, 'update'])
+            ->middleware('permission:park.update');
+        Route::delete('/activities/{park_activity}', [ParkActivityController::class, 'destroy'])
+            ->middleware('permission:park.delete');
+    });
+
+    Route::scopeBindings()->prefix('theme-parks/{theme_park}/activities/{park_activity}')->group(function () {
+        Route::apiResource('schedules', ParkActivityScheduleController::class)
+            ->except(['index', 'show'])
+            ->middleware('permission:park.create|park.update|park.delete')
+            ->names('park-activity-schedules');
     });
 });
 
