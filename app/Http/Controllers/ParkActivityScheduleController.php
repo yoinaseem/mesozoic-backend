@@ -19,6 +19,7 @@ class ParkActivityScheduleController extends Controller
     public function index(ThemePark $themePark, ParkActivity $parkActivity): AnonymousResourceCollection
     {
         $schedules = $parkActivity->schedules()->paginate(15);
+        $schedules->getCollection()->each->setRelation('parkActivity', $parkActivity);
 
         return ParkActivityScheduleResource::collection($schedules);
     }
@@ -28,6 +29,8 @@ class ParkActivityScheduleController extends Controller
         ParkActivity $parkActivity,
         ParkActivitySchedule $schedule
     ): ParkActivityScheduleResource {
+        $schedule->setRelation('parkActivity', $parkActivity);
+
         return new ParkActivityScheduleResource($schedule);
     }
 
@@ -36,16 +39,21 @@ class ParkActivityScheduleController extends Controller
         $this->authorize('create', ParkActivitySchedule::class);
 
         $data = $request->validate([
-            'scheduled_date' => ['required', 'date'],
-            'scheduled_time' => [
+            'date' => ['required', 'date'],
+            'start_time' => [
                 'required',
                 'date_format:H:i:s',
-                Rule::unique('park_activity_schedules', 'scheduled_time')->where(function ($query) use ($parkActivity, $request) {
-                    return $query
-                        ->where('park_activity_id', $parkActivity->id)
-                        ->whereDate('scheduled_date', $request->input('scheduled_date'));
-                }),
+                function ($attribute, $value, $fail) use ($parkActivity, $request) {
+                    $exists = $parkActivity->schedules()
+                        ->whereDate('date', $request->input('date'))
+                        ->where('start_time', $value)
+                        ->exists();
+                    if ($exists) {
+                        $fail('A schedule already exists at this date and time.');
+                    }
+                },
             ],
+            'end_time' => ['nullable', 'date_format:H:i:s', 'different:start_time'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
                 ParkActivitySchedule::STATUS_CANCELLED,
@@ -55,6 +63,7 @@ class ParkActivityScheduleController extends Controller
         ]);
 
         $schedule = $parkActivity->schedules()->create($data);
+        $schedule->setRelation('parkActivity', $parkActivity);
 
         return (new ParkActivityScheduleResource($schedule))->response()->setStatusCode(201);
     }
@@ -67,21 +76,25 @@ class ParkActivityScheduleController extends Controller
     ): ParkActivityScheduleResource {
         $this->authorize('update', $schedule);
 
-        $scheduledDate = $request->input('scheduled_date', $schedule->scheduled_date?->format('Y-m-d'));
+        $effectiveDate = $request->input('date', $schedule->date?->format('Y-m-d'));
 
         $data = $request->validate([
-            'scheduled_date' => ['sometimes', 'date'],
-            'scheduled_time' => [
+            'date' => ['sometimes', 'date'],
+            'start_time' => [
                 'sometimes',
                 'date_format:H:i:s',
-                Rule::unique('park_activity_schedules', 'scheduled_time')
-                    ->ignore($schedule->id)
-                    ->where(function ($query) use ($parkActivity, $scheduledDate) {
-                        return $query
-                            ->where('park_activity_id', $parkActivity->id)
-                            ->whereDate('scheduled_date', $scheduledDate);
-                    }),
+                function ($attribute, $value, $fail) use ($parkActivity, $schedule, $effectiveDate) {
+                    $exists = $parkActivity->schedules()
+                        ->whereDate('date', $effectiveDate)
+                        ->where('start_time', $value)
+                        ->where('id', '!=', $schedule->id)
+                        ->exists();
+                    if ($exists) {
+                        $fail('A schedule already exists at this date and time.');
+                    }
+                },
             ],
+            'end_time' => ['sometimes', 'nullable', 'date_format:H:i:s'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
                 ParkActivitySchedule::STATUS_CANCELLED,
@@ -90,7 +103,16 @@ class ParkActivityScheduleController extends Controller
             'notes' => ['sometimes', 'nullable', 'string'],
         ]);
 
+        $effectiveStart = array_key_exists('start_time', $data) ? $data['start_time'] : $schedule->start_time;
+        $effectiveEnd = array_key_exists('end_time', $data) ? $data['end_time'] : $schedule->end_time;
+        if ($effectiveEnd !== null && $effectiveEnd === $effectiveStart) {
+            throw \Illuminate\Validation\ValidationException::withMessages([
+                'end_time' => 'The end time must be different from the start time.',
+            ]);
+        }
+
         $schedule->update($data);
+        $schedule->setRelation('parkActivity', $parkActivity);
 
         return new ParkActivityScheduleResource($schedule);
     }

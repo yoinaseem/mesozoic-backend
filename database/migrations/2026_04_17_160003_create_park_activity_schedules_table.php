@@ -11,16 +11,17 @@ return new class extends Migration
         Schema::create('park_activity_schedules', function (Blueprint $table) {
             $table->id();
             $table->foreignId('park_activity_id')->constrained('park_activities')->cascadeOnDelete();
-            $table->date('scheduled_date');
-            $table->time('scheduled_time');
+            $table->date('date');
+            $table->time('start_time');
+            $table->time('end_time')->nullable();
             $table->enum('status', ['scheduled', 'cancelled', 'completed'])->default('scheduled');
             $table->text('notes')->nullable();
             $table->timestamps();
 
-            $table->index('scheduled_date');
+            $table->index('date');
             $table->index('status');
             $table->unique(
-                ['park_activity_id', 'scheduled_date', 'scheduled_time'],
+                ['park_activity_id', 'date', 'start_time'],
                 'park_activity_schedule_unique_slot'
             );
         });

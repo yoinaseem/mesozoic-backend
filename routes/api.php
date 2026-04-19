@@ -8,6 +8,7 @@ use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\ParkActivityController;
 use App\Http\Controllers\ParkActivityScheduleController;
+use App\Http\Controllers\ParkEffectiveHoursController;
 use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
 use App\Http\Controllers\ThemeParkController;
@@ -34,6 +35,7 @@ Route::apiResource('theme-parks', ThemeParkController::class)->only(['index', 's
 Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
     Route::apiResource('opening-hours', ParkOpeningHourController::class)->only(['index', 'show']);
     Route::apiResource('hour-overrides', ParkHourOverrideController::class)->only(['index', 'show']);
+    Route::get('effective-hours', ParkEffectiveHoursController::class);
     Route::apiResource('activities', ParkActivityController::class)
         ->parameters(['activities' => 'park_activity'])
         ->only(['index', 'show']);

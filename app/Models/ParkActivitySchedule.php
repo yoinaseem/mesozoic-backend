@@ -17,8 +17,9 @@ class ParkActivitySchedule extends Model
 
     protected $fillable = [
         'park_activity_id',
-        'scheduled_date',
-        'scheduled_time',
+        'date',
+        'start_time',
+        'end_time',
         'status',
         'notes',
     ];
@@ -26,7 +27,7 @@ class ParkActivitySchedule extends Model
     protected function casts(): array
     {
         return [
-            'scheduled_date' => 'date',
+            'date' => 'date',
         ];
     }
 
