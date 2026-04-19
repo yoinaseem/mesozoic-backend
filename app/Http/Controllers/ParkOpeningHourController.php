@@ -35,8 +35,7 @@ class ParkOpeningHourController extends Controller
         $data = $request->validate([
             'day' => [
                 'required',
-                'string',
-                'max:50',
+                Rule::in(ParkOpeningHour::DAYS),
                 Rule::unique('park_opening_hours', 'day')->where('park_id', $themePark->id),
             ],
             'open_time' => ['required', 'date_format:H:i:s'],
@@ -55,8 +54,7 @@ class ParkOpeningHourController extends Controller
         $data = $request->validate([
             'day' => [
                 'sometimes',
-                'string',
-                'max:50',
+                Rule::in(ParkOpeningHour::DAYS),
                 Rule::unique('park_opening_hours', 'day')
                     ->where('park_id', $themePark->id)
                     ->ignore($openingHour->id),

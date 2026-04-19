@@ -9,6 +9,8 @@ class ParkOpeningHour extends Model
 {
     use HasFactory;
 
+    public const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
     protected $fillable = [
         'park_id',
         'day',

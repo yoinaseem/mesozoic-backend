@@ -94,6 +94,20 @@ test('park-manager can create overnight opening hours where close_time is earlie
         ->assertJsonPath('data.close_time', '02:00:00');
 });
 
+test('park-manager cannot create opening hours with an invalid day', function () {
+    $park = ThemePark::factory()->create();
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/opening-hours", [
+            'day' => 'moonday',
+            'open_time' => '09:00:00',
+            'close_time' => '17:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('day');
+});
+
 test('park-manager cannot create opening hours where open_time equals close_time', function () {
     $park = ThemePark::factory()->create();
     $manager = User::factory()->parkManager()->create();
