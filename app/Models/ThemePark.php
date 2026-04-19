@@ -33,6 +33,11 @@ class ThemePark extends Model
         return $this->hasMany(ParkOpeningHour::class, 'park_id');
     }
 
+    public function hourOverrides()
+    {
+        return $this->hasMany(ParkHourOverride::class, 'park_id');
+    }
+
     public function parkActivities()
     {
         return $this->hasMany(ParkActivity::class, 'park_id');

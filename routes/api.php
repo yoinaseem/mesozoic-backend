@@ -8,6 +8,7 @@ use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\ParkActivityController;
 use App\Http\Controllers\ParkActivityScheduleController;
+use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
 use App\Http\Controllers\ThemeParkController;
 use App\Http\Controllers\RoomController;
@@ -32,6 +33,7 @@ Route::scopeBindings()->prefix('beach-activities/{beach_activity}')->group(funct
 Route::apiResource('theme-parks', ThemeParkController::class)->only(['index', 'show']);
 Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
     Route::apiResource('opening-hours', ParkOpeningHourController::class)->only(['index', 'show']);
+    Route::apiResource('hour-overrides', ParkHourOverrideController::class)->only(['index', 'show']);
     Route::apiResource('activities', ParkActivityController::class)
         ->parameters(['activities' => 'park_activity'])
         ->only(['index', 'show']);
@@ -100,6 +102,13 @@ Route::middleware('auth:sanctum')->group(function () {
         Route::match(['put', 'patch'], '/opening-hours/{opening_hour}', [ParkOpeningHourController::class, 'update'])
             ->middleware('permission:park.update');
         Route::delete('/opening-hours/{opening_hour}', [ParkOpeningHourController::class, 'destroy'])
+            ->middleware('permission:park.delete');
+
+        Route::post('/hour-overrides', [ParkHourOverrideController::class, 'store'])
+            ->middleware('permission:park.create');
+        Route::match(['put', 'patch'], '/hour-overrides/{hour_override}', [ParkHourOverrideController::class, 'update'])
+            ->middleware('permission:park.update');
+        Route::delete('/hour-overrides/{hour_override}', [ParkHourOverrideController::class, 'destroy'])
             ->middleware('permission:park.delete');
 
         Route::post('/activities', [ParkActivityController::class, 'store'])
