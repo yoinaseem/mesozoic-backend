@@ -22,7 +22,7 @@ class ThemeParkController extends Controller
     {
         $themePark->load([
             'openingHours',
-            'activities' => fn ($q) => $q->withCount('schedules'),
+            'parkActivities' => fn ($q) => $q->withCount('schedules'),
         ]);
 
         return new ThemeParkResource($themePark);

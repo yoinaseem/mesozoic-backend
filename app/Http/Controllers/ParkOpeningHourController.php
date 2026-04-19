@@ -9,8 +9,8 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Illuminate\Support\Facades\Validator;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ParkOpeningHourController extends Controller
 {
@@ -40,7 +40,7 @@ class ParkOpeningHourController extends Controller
                 Rule::unique('park_opening_hours', 'day')->where('park_id', $themePark->id),
             ],
             'open_time' => ['required', 'date_format:H:i:s'],
-            'close_time' => ['required', 'date_format:H:i:s', 'after:open_time'],
+            'close_time' => ['required', 'date_format:H:i:s', 'different:open_time'],
         ]);
 
         $openingHour = $themePark->openingHours()->create($data);
@@ -65,14 +65,13 @@ class ParkOpeningHourController extends Controller
             'close_time' => ['sometimes', 'date_format:H:i:s'],
         ]);
 
-        $open = $data['open_time'] ?? $openingHour->open_time;
-        $close = $data['close_time'] ?? $openingHour->close_time;
-        Validator::make(
-            ['open_time' => $open, 'close_time' => $close],
-            ['close_time' => ['required', 'date_format:H:i:s', 'after:open_time']],
-            [],
-            ['open_time' => 'open time', 'close_time' => 'close time']
-        )->validate();
+        $effectiveOpen = $data['open_time'] ?? $openingHour->open_time;
+        $effectiveClose = $data['close_time'] ?? $openingHour->close_time;
+        if ($effectiveOpen === $effectiveClose) {
+            throw ValidationException::withMessages([
+                'close_time' => 'The close time must be different from the open time.',
+            ]);
+        }
 
         $openingHour->update($data);
 

@@ -19,7 +19,7 @@ class ThemeParkResource extends JsonResource
             'contact_email' => $this->contact_email,
             'contact_phone' => $this->contact_phone,
             'opening_hours' => ParkOpeningHourResource::collection($this->whenLoaded('openingHours')),
-            'activities' => ParkActivityResource::collection($this->whenLoaded('activities')),
+            'activities' => ParkActivityResource::collection($this->whenLoaded('parkActivities')),
             'created_at' => $this->created_at,
             'updated_at' => $this->updated_at,
         ];

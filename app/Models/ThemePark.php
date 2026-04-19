@@ -33,7 +33,7 @@ class ThemePark extends Model
         return $this->hasMany(ParkOpeningHour::class, 'park_id');
     }
 
-    public function activities()
+    public function parkActivities()
     {
         return $this->hasMany(ParkActivity::class, 'park_id');
     }

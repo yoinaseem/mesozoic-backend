@@ -17,7 +17,7 @@ class ParkActivityController extends Controller
     public function index(ThemePark $themePark): AnonymousResourceCollection
     {
         return ParkActivityResource::collection(
-            $themePark->activities()->paginate(15)
+            $themePark->parkActivities()->paginate(15)
         );
     }
 
@@ -42,7 +42,7 @@ class ParkActivityController extends Controller
             'is_all_day' => ['sometimes', 'boolean'],
         ]);
 
-        $parkActivity = $themePark->activities()->create($data);
+        $parkActivity = $themePark->parkActivities()->create($data);
 
         return (new ParkActivityResource($parkActivity))->response()->setStatusCode(201);
     }
