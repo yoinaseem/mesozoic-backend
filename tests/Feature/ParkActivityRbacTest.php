@@ -130,3 +130,106 @@ test('superadmin can delete a park activity', function () {
         ->deleteJson("/api/theme-parks/{$park->id}/activities/{$activity->id}")
         ->assertNoContent();
 });
+
+test('park-manager can create an all-day activity without duration', function () {
+    $park = ThemePark::factory()->create();
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities", [
+            'name' => 'Park Pass',
+            'description' => 'Open all day',
+            'price' => 50,
+            'max_capacity' => 1000,
+            'is_all_day' => true,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.is_all_day', true)
+        ->assertJsonPath('data.duration', null);
+});
+
+test('creating an all-day activity nulls any supplied duration', function () {
+    $park = ThemePark::factory()->create();
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities", [
+            'name' => 'Park Pass',
+            'description' => 'Open all day',
+            'price' => 50,
+            'max_capacity' => 1000,
+            'duration' => 60,
+            'is_all_day' => true,
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.duration', null);
+});
+
+test('creating a non-all-day activity without duration fails validation', function () {
+    $park = ThemePark::factory()->create();
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities", [
+            'name' => 'Coaster',
+            'description' => 'Fast',
+            'price' => 10,
+            'max_capacity' => 24,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('duration');
+});
+
+test('toggling an activity to all-day clears its duration', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'duration' => 45,
+        'is_all_day' => false,
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}", [
+            'is_all_day' => true,
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.is_all_day', true)
+        ->assertJsonPath('data.duration', null);
+});
+
+test('toggling an all-day activity to non-all-day without duration fails validation', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'duration' => null,
+        'is_all_day' => true,
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}", [
+            'is_all_day' => false,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('duration');
+});
+
+test('toggling an all-day activity to non-all-day succeeds when duration is provided', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'duration' => null,
+        'is_all_day' => true,
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}", [
+            'is_all_day' => false,
+            'duration' => 60,
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.is_all_day', false)
+        ->assertJsonPath('data.duration', 60);
+});
