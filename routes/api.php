@@ -11,6 +11,8 @@ use App\Http\Controllers\ParkActivityScheduleController;
 use App\Http\Controllers\ParkEffectiveHoursController;
 use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
+use App\Http\Controllers\ReservationController;
+use App\Http\Controllers\RoomBookingController;
 use App\Http\Controllers\ThemeParkController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
@@ -127,6 +129,25 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('permission:park.create|park.update|park.delete')
             ->names('park-activity-schedules');
     });
+
+    // Reservations — read-only. Created implicitly via /room-bookings.
+    Route::get('/reservations',               [ReservationController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/reservations/{reservation}', [ReservationController::class, 'show'])
+        ->middleware('permission:bookings.view');
+
+    // RoomBookings — per-verb perms (customer lacks bookings.update, so
+    // apiResource+pipe-OR would leak PATCH to customers at the middleware layer).
+    Route::get('/room-bookings',                                   [RoomBookingController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/room-bookings/{room_booking}',                    [RoomBookingController::class, 'show'])
+        ->middleware('permission:bookings.view');
+    Route::post('/room-bookings',                                  [RoomBookingController::class, 'store'])
+        ->middleware('permission:bookings.create');
+    Route::match(['put', 'patch'], '/room-bookings/{room_booking}', [RoomBookingController::class, 'update'])
+        ->middleware('permission:bookings.update');
+    Route::delete('/room-bookings/{room_booking}',                 [RoomBookingController::class, 'destroy'])
+        ->middleware('permission:bookings.cancel');
 });
 
 // Ferries & schedules – read-only public, mutations protected (same pattern as hotels)

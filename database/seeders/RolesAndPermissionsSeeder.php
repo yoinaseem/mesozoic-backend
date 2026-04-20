@@ -56,6 +56,7 @@ class RolesAndPermissionsSeeder extends Seeder
             'hotels.view', 'hotels.update',
             'room-types.view', 'room-types.create', 'room-types.update', 'room-types.delete',
             'rooms.view', 'rooms.create', 'rooms.update', 'rooms.delete',
+            'bookings.view', 'bookings.create', 'bookings.update', 'bookings.delete', 'bookings.cancel',
         ]);
 
         // Module managers get view, create, and update on their module. Delete stays
@@ -65,8 +66,10 @@ class RolesAndPermissionsSeeder extends Seeder
         $parkManager->syncPermissions(['park.view', 'park.create', 'park.update']);
         $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
 
-        // Customer exists purely so self-registration has a default role to bind.
-        $customer->syncPermissions([]);
+        // Customer: self-service booking flow — create, view, and cancel their own bookings.
+        $customer->syncPermissions([
+            'bookings.view', 'bookings.create', 'bookings.cancel',
+        ]);
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();
     }
