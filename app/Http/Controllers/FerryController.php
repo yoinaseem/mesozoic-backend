@@ -2,22 +2,24 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\FerryResource;
 use App\Models\Ferry;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 class FerryController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(): AnonymousResourceCollection
     {
-        return response()->json(Ferry::paginate(15));
+        return FerryResource::collection(Ferry::paginate(15));
     }
 
-    public function show(Ferry $ferry): JsonResponse
+    public function show(Ferry $ferry): FerryResource
     {
-        $ferry->load('schedules');
+        $ferry->load('schedules')->loadCount('schedules');
 
-        return response()->json($ferry);
+        return new FerryResource($ferry);
     }
 
     public function store(Request $request): JsonResponse
@@ -32,10 +34,10 @@ class FerryController extends Controller
 
         $ferry = Ferry::create($data);
 
-        return response()->json($ferry, 201);
+        return (new FerryResource($ferry))->response()->setStatusCode(201);
     }
 
-    public function update(Request $request, Ferry $ferry): JsonResponse
+    public function update(Request $request, Ferry $ferry): FerryResource
     {
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:255'],
@@ -47,7 +49,7 @@ class FerryController extends Controller
 
         $ferry->update($data);
 
-        return response()->json($ferry);
+        return new FerryResource($ferry);
     }
 
     public function destroy(Ferry $ferry): JsonResponse

@@ -11,10 +11,10 @@ return new class extends Migration
         Schema::create('ferries', function (Blueprint $table) {
             $table->id();
             $table->string('name');
-            $table->text('description')->nullable();
+            $table->text('description')->nullable(); //remove this field and add to ferryType if we decide to implement ferry schedules, otherwise we'll refactor to simplify
             $table->decimal('price', 10, 2)->default(0);
             $table->unsignedInteger('capacity')->default(1);
-            $table->string('image')->nullable();
+            $table->string('image')->nullable(); //remove this field and add this to ferryType if we decide to implement ferry schedules, otherwise we'll refactor to simplify
             $table->timestamps();
         });
     }

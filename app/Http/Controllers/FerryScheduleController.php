@@ -2,33 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Resources\FerryScheduleResource;
 use App\Models\Ferry;
 use App\Models\FerrySchedule;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Unique;
 use Illuminate\Validation\ValidationException;
 
 class FerryScheduleController extends Controller
 {
-    public function index(): JsonResponse
+    public function index(): AnonymousResourceCollection
     {
-        return response()->json(
+        return FerryScheduleResource::collection(
             FerrySchedule::query()->with('ferry')->paginate(15)
         );
     }
 
-    public function indexForFerry(Ferry $ferry): JsonResponse
+    public function indexForFerry(Ferry $ferry): AnonymousResourceCollection
     {
-        return response()->json($ferry->schedules()->paginate(15));
+        return FerryScheduleResource::collection($ferry->schedules()->paginate(15));
     }
 
-    public function show(FerrySchedule $ferrySchedule): JsonResponse
+    public function show(FerrySchedule $ferrySchedule): FerryScheduleResource
     {
         $ferrySchedule->load('ferry');
 
-        return response()->json($ferrySchedule);
+        return new FerryScheduleResource($ferrySchedule);
     }
 
     public function store(Request $request): JsonResponse
@@ -52,10 +54,12 @@ class FerryScheduleController extends Controller
 
         $schedule = FerrySchedule::create($data);
 
-        return response()->json($schedule->load('ferry'), 201);
+        return (new FerryScheduleResource($schedule->load('ferry')))
+            ->response()
+            ->setStatusCode(201);
     }
 
-    public function update(Request $request, FerrySchedule $ferrySchedule): JsonResponse
+    public function update(Request $request, FerrySchedule $ferrySchedule): FerryScheduleResource
     {
         $ferryId = $request->input('ferry_id', $ferrySchedule->ferry_id);
         $travelDate = $request->input('travel_date', $ferrySchedule->travel_date?->format('Y-m-d'));
@@ -84,7 +88,7 @@ class FerryScheduleController extends Controller
 
         $ferrySchedule->update($data);
 
-        return response()->json($ferrySchedule->load('ferry'));
+        return new FerryScheduleResource($ferrySchedule->load('ferry'));
     }
 
     public function destroy(FerrySchedule $ferrySchedule): JsonResponse
