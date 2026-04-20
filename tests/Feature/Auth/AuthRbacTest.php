@@ -42,10 +42,10 @@ test('me returns roles and permissions for the authenticated user', function () 
     $response = $this->actingAs($user)
         ->getJson('/api/auth/me')
         ->assertOk()
-        ->assertJsonPath('data.email', $user->email)
-        ->assertJsonPath('data.roles.0', 'hotel-manager');
+        ->assertJsonPath('user.email', $user->email)
+        ->assertJsonPath('user.roles.0', 'hotel-manager');
 
-    expect($response->json('data.permissions'))->toContain('hotels.update');
+    expect($response->json('user.permissions'))->toContain('hotels.update');
 });
 
 test('me requires authentication', function () {
