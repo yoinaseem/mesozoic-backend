@@ -8,6 +8,7 @@ use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\ParkActivityController;
 use App\Http\Controllers\ParkActivityScheduleController;
+use App\Http\Controllers\ParkBookingController;
 use App\Http\Controllers\ParkEffectiveHoursController;
 use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
@@ -147,6 +148,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['put', 'patch'], '/room-bookings/{room_booking}', [RoomBookingController::class, 'update'])
         ->middleware('permission:bookings.update');
     Route::delete('/room-bookings/{room_booking}',                 [RoomBookingController::class, 'destroy'])
+        ->middleware('permission:bookings.cancel');
+
+    // ParkBookings — day-pass tied to a confirmed room booking. Same
+    // per-verb split as /room-bookings so customers (who lack bookings.update)
+    // can POST + DELETE but not PATCH.
+    Route::get('/park-bookings',                                   [ParkBookingController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/park-bookings/{park_booking}',                    [ParkBookingController::class, 'show'])
+        ->middleware('permission:bookings.view');
+    Route::post('/park-bookings',                                  [ParkBookingController::class, 'store'])
+        ->middleware('permission:bookings.create');
+    Route::match(['put', 'patch'], '/park-bookings/{park_booking}', [ParkBookingController::class, 'update'])
+        ->middleware('permission:bookings.update');
+    Route::delete('/park-bookings/{park_booking}',                 [ParkBookingController::class, 'destroy'])
         ->middleware('permission:bookings.cancel');
 });
 

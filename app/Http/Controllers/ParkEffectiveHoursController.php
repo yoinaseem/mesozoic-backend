@@ -18,7 +18,7 @@ class ParkEffectiveHoursController extends Controller
         $data = $request->validate([
             'date' => ['nullable', 'date'],
             'from' => ['nullable', 'date', 'required_with:to'],
-            'to' => ['nullable', 'date', 'required_with:from', 'after_or_equal:from'],
+            'to'   => ['nullable', 'date', 'required_with:from', 'after_or_equal:from'],
         ]);
 
         if (empty($data['date']) && empty($data['from'])) {
@@ -40,59 +40,11 @@ class ParkEffectiveHoursController extends Controller
             ]);
         }
 
-        $baseline = $themePark->openingHours()->get()->keyBy('day');
-        $overrides = $themePark->hourOverrides()
-            ->whereDate('date', '>=', $from->format('Y-m-d'))
-            ->whereDate('date', '<=', $to->format('Y-m-d'))
-            ->get()
-            ->keyBy(fn ($o) => $o->date->format('Y-m-d'));
-
         $result = [];
         foreach (CarbonPeriod::create($from, $to) as $day) {
-            $dateKey = $day->format('Y-m-d');
-            $weekdayKey = strtolower($day->format('l'));
-            $override = $overrides->get($dateKey);
-            $base = $baseline->get($weekdayKey);
-
-            $result[] = $this->resolveDay($dateKey, $override, $base);
+            $result[] = $themePark->effectiveHoursOn($day);
         }
 
         return response()->json(['data' => $result]);
-    }
-
-    private function resolveDay(string $date, $override, $baseline): array
-    {
-        if ($override !== null) {
-            $isClosed = $override->open_time === null && $override->close_time === null;
-
-            return [
-                'date' => $date,
-                'status' => $isClosed ? 'closed' : 'open',
-                'source' => 'override',
-                'open_time' => $override->open_time,
-                'close_time' => $override->close_time,
-                'note' => $override->note,
-            ];
-        }
-
-        if ($baseline !== null) {
-            return [
-                'date' => $date,
-                'status' => 'open',
-                'source' => 'baseline',
-                'open_time' => $baseline->open_time,
-                'close_time' => $baseline->close_time,
-                'note' => null,
-            ];
-        }
-
-        return [
-            'date' => $date,
-            'status' => 'not_configured',
-            'source' => null,
-            'open_time' => null,
-            'close_time' => null,
-            'note' => null,
-        ];
     }
 }

@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 
@@ -41,5 +43,74 @@ class ThemePark extends Model
     public function parkActivities()
     {
         return $this->hasMany(ParkActivity::class, 'park_id');
+    }
+
+    public function parkBookings()
+    {
+        return $this->hasMany(ParkBooking::class, 'park_id');
+    }
+
+    /**
+     * Resolve this park's operating hours for a calendar date.
+     *
+     * Precedence: a ParkHourOverride row for the date wins over the weekday
+     * baseline from ParkOpeningHour. An override with both times null means
+     * "closed that day" (e.g. sudden holiday). Missing baseline + missing
+     * override → "not_configured", which callers should treat as closed.
+     *
+     * Shape mirrors the JSON emitted by /theme-parks/{theme_park}/effective-hours
+     * so the endpoint and business-rule validators share one source of truth.
+     */
+    public function effectiveHoursOn(CarbonInterface|string $date): array
+    {
+        $day = $date instanceof CarbonInterface
+            ? CarbonImmutable::parse($date->toDateString())
+            : CarbonImmutable::parse($date);
+
+        $dateKey = $day->format('Y-m-d');
+
+        $override = $this->hourOverrides()->whereDate('date', $dateKey)->first();
+
+        if ($override !== null) {
+            $isClosed = $override->open_time === null && $override->close_time === null;
+
+            return [
+                'date'       => $dateKey,
+                'status'     => $isClosed ? 'closed' : 'open',
+                'source'     => 'override',
+                'open_time'  => $override->open_time,
+                'close_time' => $override->close_time,
+                'note'       => $override->note,
+            ];
+        }
+
+        $baseline = $this->openingHours()
+            ->where('day', strtolower($day->format('l')))
+            ->first();
+
+        if ($baseline !== null) {
+            return [
+                'date'       => $dateKey,
+                'status'     => 'open',
+                'source'     => 'baseline',
+                'open_time'  => $baseline->open_time,
+                'close_time' => $baseline->close_time,
+                'note'       => null,
+            ];
+        }
+
+        return [
+            'date'       => $dateKey,
+            'status'     => 'not_configured',
+            'source'     => null,
+            'open_time'  => null,
+            'close_time' => null,
+            'note'       => null,
+        ];
+    }
+
+    public function isOpenOn(CarbonInterface|string $date): bool
+    {
+        return $this->effectiveHoursOn($date)['status'] === 'open';
     }
 }

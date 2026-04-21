@@ -63,7 +63,12 @@ class RolesAndPermissionsSeeder extends Seeder
         // with superadmin. Unlike hotel-manager (which is pivot-scoped), these roles
         // manage all resources in their module without per-instance ownership.
         $ferryManager->syncPermissions(['ferry.view', 'ferry.create', 'ferry.update']);
-        $parkManager->syncPermissions(['park.view', 'park.create', 'park.update']);
+        $parkManager->syncPermissions([
+            'park.view', 'park.create', 'park.update',
+            // Park-managers need bookings.* to manage park day-pass bookings
+            // (see /api/park-bookings). Matches hotel-manager's bookings scope.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
         $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
 
         // Customer: self-service booking flow — create, view, and cancel their own bookings.
