@@ -9,7 +9,7 @@ use App\Models\ThemePark;
 use App\Models\User;
 use Carbon\Carbon;
 
-function seedRoomSetup(int $guests = 2, int $capacity = 4, int $price = 100): array
+function seedRoomSetup(int $capacity = 4, int $price = 100): array
 {
     $hotel = Hotel::factory()->create();
     $type  = $hotel->roomTypes()->create([
@@ -256,14 +256,14 @@ test('same day pass can be re-booked after the first is cancelled', function () 
 });
 
 test('park capacity cap blocks new bookings when full', function () {
-    [, $type]       = seedRoomSetup(guests: 2);
+    [, $type]       = seedRoomSetup();
     $customer       = parkCustomer();
     [$rb, $checkIn] = bookedStayFor($customer, $type, guests: 2);
     $park           = openEveryDayPark(capacity: 3); // only 3 seats total for the day
 
     // Pre-fill 2 of 3 seats via a sibling booking (different room booking / reservation).
     $other            = parkCustomer();
-    [, $otherType]    = seedRoomSetup(guests: 2);
+    [, $otherType]    = seedRoomSetup();
     [$otherRb]        = bookedStayFor($other, $otherType, guests: 2);
     ParkBooking::create([
         'room_booking_id' => $otherRb->id,
