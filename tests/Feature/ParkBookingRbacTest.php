@@ -2,6 +2,7 @@
 
 use App\Models\Hotel;
 use App\Models\ParkBooking;
+use App\Models\ParkOpeningHour;
 use App\Models\Reservation;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
@@ -9,17 +10,19 @@ use App\Models\ThemePark;
 use App\Models\User;
 use Carbon\Carbon;
 
-function seedRoomSetup(int $capacity = 4, int $price = 100): array
+function seedRoomType(int $capacity = 4, int $price = 100): RoomType
 {
     $hotel = Hotel::factory()->create();
-    $type  = $hotel->roomTypes()->create([
+
+    /** @var RoomType $type */
+    $type = $hotel->roomTypes()->create([
         'name'     => 'Standard',
         'capacity' => $capacity,
         'price'    => $price,
     ]);
     $hotel->rooms()->create(['room_type_id' => $type->id, 'room_no' => '101']);
 
-    return [$hotel, $type];
+    return $type;
 }
 
 function parkCustomer(): User
@@ -60,15 +63,11 @@ function confirmedRoomBooking(
     ]);
 }
 
-/**
- * Park with a 9-to-9 baseline for every weekday, so any future date the tests
- * pick is "open" unless a closed-day override is attached.
- */
 function openEveryDayPark(int $capacity = 100, float $price = 50.0): ThemePark
 {
     $park = ThemePark::factory()->create(['capacity' => $capacity, 'price' => $price]);
 
-    foreach (\App\Models\ParkOpeningHour::DAYS as $day) {
+    foreach (ParkOpeningHour::DAYS as $day) {
         $park->openingHours()->create([
             'day'        => $day,
             'open_time'  => '09:00:00',
@@ -79,14 +78,19 @@ function openEveryDayPark(int $capacity = 100, float $price = 50.0): ThemePark
     return $park;
 }
 
-function bookedStayFor(User $customer, RoomType $type, int $guests = 2): array
+/**
+ * Build a 1-room reservation for a customer. 3-night stay starting +3 days,
+ * so days +3, +4, +5 are bookable (+6 is check-out, excluded).
+ */
+function singleRoomReservation(User $customer, int $guests = 2): array
 {
+    $type        = seedRoomType();
     $reservation = Reservation::create(['user_id' => $customer->id]);
     $checkIn     = now()->addDays(3)->toDateString();
-    $checkOut    = now()->addDays(6)->toDateString(); // 3-night stay: +3, +4, +5 are bookable; +6 is checkout
-    $rb          = confirmedRoomBooking($reservation, $type, $checkIn, $checkOut, $guests);
+    $checkOut    = now()->addDays(6)->toDateString();
+    confirmedRoomBooking($reservation, $type, $checkIn, $checkOut, $guests);
 
-    return [$rb, $checkIn, $checkOut];
+    return [$reservation, $checkIn, $checkOut];
 }
 
 test('unauthenticated request cannot list park bookings', function () {
@@ -94,94 +98,143 @@ test('unauthenticated request cannot list park bookings', function () {
 });
 
 test('customer creates a day pass within the stay window', function () {
-    [, $type]                 = seedRoomSetup();
-    $customer                 = parkCustomer();
-    [$rb, $checkIn]           = bookedStayFor($customer, $type, guests: 2);
-    $park                     = openEveryDayPark(price: 50.0);
+    $customer                     = parkCustomer();
+    [$reservation, $checkIn]      = singleRoomReservation($customer, guests: 2);
+    $park                         = openEveryDayPark(price: 50.0);
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertCreated()
-        ->assertJsonPath('data.room_booking_id', $rb->id)
+        ->assertJsonPath('data.reservation_id', $reservation->id)
         ->assertJsonPath('data.park_id', $park->id)
-        ->assertJsonPath('data.guests', 2)            // inherited from room booking
+        ->assertJsonPath('data.guests', 2)
         ->assertJsonPath('data.status', 'confirmed')
-        ->assertJsonPath('data.total_price', '100.00'); // 2 guests × $50
+        ->assertJsonPath('data.total_price', '100.00'); // 2 × $50
 });
 
-test('guests are always inherited from the room booking (not accepted from client)', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type, guests: 3);
-    $park           = openEveryDayPark();
+test('father books 3 rooms for a family of 6 and makes one park booking for all of them', function () {
+    $father = parkCustomer();
+    $typeA  = seedRoomType(capacity: 2);
+    $typeB  = seedRoomType(capacity: 2);
+    $typeC  = seedRoomType(capacity: 2);
 
-    $response = $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
-        'guests'          => 99, // attempt to override — should be ignored
-    ])->assertCreated();
+    $reservation = Reservation::create(['user_id' => $father->id]);
+    $checkIn     = now()->addDays(3)->toDateString();
+    $checkOut    = now()->addDays(6)->toDateString();
 
-    expect($response->json('data.guests'))->toBe(3);
+    confirmedRoomBooking($reservation, $typeA, $checkIn, $checkOut, guests: 2); // parents
+    confirmedRoomBooking($reservation, $typeB, $checkIn, $checkOut, guests: 2); // daughters
+    confirmedRoomBooking($reservation, $typeC, $checkIn, $checkOut, guests: 2); // sons
+
+    expect($reservation->seatPoolOn($checkIn))->toBe(6);
+
+    $park = openEveryDayPark();
+
+    $this->actingAs($father)->postJson('/api/park-bookings', [
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 6,
+    ])
+        ->assertCreated()
+        ->assertJsonPath('data.guests', 6);
+
+    expect(ParkBooking::where('reservation_id', $reservation->id)->count())->toBe(1);
 });
 
-test('park booking on the check-out date is rejected', function () {
-    [, $type]                  = seedRoomSetup();
-    $customer                  = parkCustomer();
-    [$rb, , $checkOut]         = bookedStayFor($customer, $type);
-    $park                      = openEveryDayPark();
+test('guests cannot exceed the reservation seat pool on the date', function () {
+    $customer                     = parkCustomer();
+    [$reservation, $checkIn]      = singleRoomReservation($customer, guests: 2); // pool of 2
+    $park                         = openEveryDayPark();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkOut,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 3,
+    ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['guests']);
+});
+
+test('guests can be fewer than the seat pool (partial group visit)', function () {
+    $father = parkCustomer();
+    $typeA  = seedRoomType(capacity: 2);
+    $typeB  = seedRoomType(capacity: 2);
+
+    $reservation = Reservation::create(['user_id' => $father->id]);
+    $checkIn     = now()->addDays(3)->toDateString();
+    $checkOut    = now()->addDays(6)->toDateString();
+    confirmedRoomBooking($reservation, $typeA, $checkIn, $checkOut, guests: 2);
+    confirmedRoomBooking($reservation, $typeB, $checkIn, $checkOut, guests: 2);
+
+    $park = openEveryDayPark();
+
+    // Pool is 4, only 2 go.
+    $this->actingAs($father)->postJson('/api/park-bookings', [
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
+    ])
+        ->assertCreated()
+        ->assertJsonPath('data.guests', 2);
+});
+
+test('park booking on the check-out date is rejected (seat pool is 0)', function () {
+    $customer                       = parkCustomer();
+    [$reservation, , $checkOut]     = singleRoomReservation($customer);
+    $park                           = openEveryDayPark();
+
+    $this->actingAs($customer)->postJson('/api/park-bookings', [
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkOut,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
 test('park booking before check-in is rejected', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
-
-    $dayBeforeCheckIn = Carbon::parse($checkIn)->subDay()->toDateString();
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = openEveryDayPark();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $dayBeforeCheckIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => Carbon::parse($checkIn)->subDay()->toDateString(),
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
 test('park booking after checkout is rejected', function () {
-    [, $type]                   = seedRoomSetup();
-    $customer                   = parkCustomer();
-    [$rb, , $checkOut]          = bookedStayFor($customer, $type);
-    $park                       = openEveryDayPark();
+    $customer                    = parkCustomer();
+    [$reservation, , $checkOut]  = singleRoomReservation($customer);
+    $park                        = openEveryDayPark();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => Carbon::parse($checkOut)->addDays(2)->toDateString(),
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => Carbon::parse($checkOut)->addDays(2)->toDateString(),
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
 test('park booking on a closed override day is rejected', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = openEveryDayPark();
 
-    // Sudden holiday: null open/close = closed that day.
     $park->hourOverrides()->create([
         'date'       => $checkIn,
         'open_time'  => null,
@@ -190,83 +243,109 @@ test('park booking on a closed override day is rejected', function () {
     ]);
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
-test('park booking with no baseline hours configured is rejected (not_configured = closed)', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = ThemePark::factory()->create(); // no opening hours configured
+test('park booking with no baseline hours configured is rejected', function () {
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = ThemePark::factory()->create(); // no opening hours
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
-test('one day-pass per room booking per date — duplicate rejected', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
+test('duplicate (reservation, park, date) rejected among confirmed rows', function () {
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = openEveryDayPark();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])->assertCreated();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['date']);
 });
 
-test('same day pass can be re-booked after the first is cancelled', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
+test('same (reservation, date) is allowed for a different park', function () {
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer, guests: 2);
+    $parkA                    = openEveryDayPark();
+    $parkB                    = openEveryDayPark();
+
+    $this->actingAs($customer)->postJson('/api/park-bookings', [
+        'reservation_id' => $reservation->id,
+        'park_id'        => $parkA->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
+    ])->assertCreated();
+
+    $this->actingAs($customer)->postJson('/api/park-bookings', [
+        'reservation_id' => $reservation->id,
+        'park_id'        => $parkB->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
+    ])->assertCreated();
+});
+
+test('same park-day pass can be re-booked after the first is cancelled', function () {
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = openEveryDayPark();
 
     $first = $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])->assertCreated();
 
-    $this->actingAs($customer)->deleteJson('/api/park-bookings/'.$first->json('data.id'))->assertNoContent();
+    $this->actingAs($customer)
+        ->deleteJson('/api/park-bookings/'.$first->json('data.id'))
+        ->assertNoContent();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])->assertCreated();
 });
 
 test('park capacity cap blocks new bookings when full', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type, guests: 2);
-    $park           = openEveryDayPark(capacity: 3); // only 3 seats total for the day
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer, guests: 2);
+    $park                     = openEveryDayPark(capacity: 3); // only 3 seats total
 
-    // Pre-fill 2 of 3 seats via a sibling booking (different room booking / reservation).
-    $other            = parkCustomer();
-    [, $otherType]    = seedRoomSetup();
-    [$otherRb]        = bookedStayFor($other, $otherType, guests: 2);
+    // Pre-fill 2 of 3 seats via another customer's reservation.
+    $other                    = parkCustomer();
+    [$otherRes]               = singleRoomReservation($other, guests: 2);
+
+    // Align dates so both want the same day.
     ParkBooking::create([
-        'room_booking_id' => $otherRb->id,
+        'reservation_id'  => $otherRes->id,
         'park_id'         => $park->id,
         'date'            => $checkIn,
         'guests'          => 2,
@@ -275,68 +354,69 @@ test('park capacity cap blocks new bookings when full', function () {
         'total_price'     => (float) $park->price * 2,
     ]);
 
-    // Customer's 2 guests + 2 existing = 4 > capacity 3 → rejected.
+    // Customer wants 2 more → 2 + 2 = 4 > 3 cap.
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['park_id']);
 });
 
-test('room booking must be confirmed — cancelled room booking rejects park booking', function () {
-    [, $type]        = seedRoomSetup();
-    $customer        = parkCustomer();
-    $reservation     = Reservation::create(['user_id' => $customer->id]);
-    $rb              = confirmedRoomBooking(
+test('reservation with only cancelled rooms has empty seat pool → rejected', function () {
+    $customer    = parkCustomer();
+    $type        = seedRoomType();
+    $reservation = Reservation::create(['user_id' => $customer->id]);
+    confirmedRoomBooking(
         $reservation,
         $type,
         now()->addDays(3)->toDateString(),
         now()->addDays(6)->toDateString(),
         status: 'cancelled',
     );
-    $park            = openEveryDayPark();
+    $park = openEveryDayPark();
 
     $this->actingAs($customer)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => now()->addDays(3)->toDateString(),
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => now()->addDays(3)->toDateString(),
+        'guests'         => 1,
     ])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['room_booking_id']);
+        ->assertJsonValidationErrors(['date']);
 });
 
-test('customer cannot attach a park booking to another users room booking', function () {
-    [, $type]  = seedRoomSetup();
-    $owner     = parkCustomer();
-    $stranger  = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($owner, $type);
-    $park      = openEveryDayPark();
+test('customer cannot attach a park booking to another users reservation', function () {
+    $owner                   = parkCustomer();
+    $stranger                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($owner);
+    $park                    = openEveryDayPark();
 
     $this->actingAs($stranger)->postJson('/api/park-bookings', [
-        'room_booking_id' => $rb->id,
-        'park_id'         => $park->id,
-        'date'            => $checkIn,
+        'reservation_id' => $reservation->id,
+        'park_id'        => $park->id,
+        'date'           => $checkIn,
+        'guests'         => 2,
     ])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['room_booking_id']);
+        ->assertJsonValidationErrors(['reservation_id']);
 });
 
 test('customer cannot update a park booking', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
+    $customer                 = parkCustomer();
+    [$reservation, $checkIn]  = singleRoomReservation($customer);
+    $park                     = openEveryDayPark();
 
     $booking = ParkBooking::create([
-        'room_booking_id' => $rb->id,
+        'reservation_id'  => $reservation->id,
         'park_id'         => $park->id,
         'date'            => $checkIn,
-        'guests'          => $rb->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rb->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -345,20 +425,19 @@ test('customer cannot update a park booking', function () {
 });
 
 test('customer cannot view another customers park booking', function () {
-    [, $type]       = seedRoomSetup();
-    $owner          = parkCustomer();
-    $stranger       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($owner, $type);
-    $park           = openEveryDayPark();
+    $owner                   = parkCustomer();
+    $stranger                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($owner);
+    $park                    = openEveryDayPark();
 
     $booking = ParkBooking::create([
-        'room_booking_id' => $rb->id,
+        'reservation_id'  => $reservation->id,
         'park_id'         => $park->id,
         'date'            => $checkIn,
-        'guests'          => $rb->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rb->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($stranger)
@@ -367,19 +446,18 @@ test('customer cannot view another customers park booking', function () {
 });
 
 test('customer cancels own park booking before the visit date', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $park                    = openEveryDayPark();
 
     $booking = ParkBooking::create([
-        'room_booking_id' => $rb->id,
+        'reservation_id'  => $reservation->id,
         'park_id'         => $park->id,
         'date'            => $checkIn,
-        'guests'          => $rb->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rb->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -391,26 +469,26 @@ test('customer cancels own park booking before the visit date', function () {
     expect($booking->cancelled_at)->not->toBeNull();
 });
 
-test('customer cannot cancel a park booking on or after the visit date', function () {
-    [, $type]        = seedRoomSetup();
-    $customer        = parkCustomer();
-    $reservation     = Reservation::create(['user_id' => $customer->id]);
-    $rb              = confirmedRoomBooking(
+test('customer cannot cancel a park booking on the visit date', function () {
+    $customer    = parkCustomer();
+    $type        = seedRoomType();
+    $reservation = Reservation::create(['user_id' => $customer->id]);
+    confirmedRoomBooking(
         $reservation,
         $type,
         now()->subDay()->toDateString(),
         now()->addDays(2)->toDateString(),
     );
-    $park            = openEveryDayPark();
+    $park = openEveryDayPark();
 
     $booking = ParkBooking::create([
-        'room_booking_id' => $rb->id,
+        'reservation_id'  => $reservation->id,
         'park_id'         => $park->id,
-        'date'            => now()->toDateString(), // today — cancellation disallowed
-        'guests'          => $rb->guests,
+        'date'            => now()->toDateString(), // today
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rb->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -419,20 +497,19 @@ test('customer cannot cancel a park booking on or after the visit date', functio
 });
 
 test('park-manager can cancel any park booking', function () {
-    [, $type]       = seedRoomSetup();
-    $customer       = parkCustomer();
-    [$rb, $checkIn] = bookedStayFor($customer, $type);
-    $park           = openEveryDayPark();
-    $manager        = parkManagerUser();
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $park                    = openEveryDayPark();
+    $manager                 = parkManagerUser();
 
     $booking = ParkBooking::create([
-        'room_booking_id' => $rb->id,
+        'reservation_id'  => $reservation->id,
         'park_id'         => $park->id,
         'date'            => $checkIn,
-        'guests'          => $rb->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rb->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -442,23 +519,19 @@ test('park-manager can cancel any park booking', function () {
 });
 
 test('superadmin sees every park booking', function () {
-    [, $typeA]        = seedRoomSetup();
-    [, $typeB]        = seedRoomSetup();
-    $c1               = parkCustomer();
-    $c2               = parkCustomer();
-    [$rbA, $checkInA] = bookedStayFor($c1, $typeA);
-    [$rbB, $checkInB] = bookedStayFor($c2, $typeB);
-    $park             = openEveryDayPark();
+    [$rA, $dA] = singleRoomReservation(parkCustomer());
+    [$rB, $dB] = singleRoomReservation(parkCustomer());
+    $park      = openEveryDayPark();
 
-    foreach ([[$rbA, $checkInA], [$rbB, $checkInB]] as [$rb, $date]) {
+    foreach ([[$rA, $dA], [$rB, $dB]] as [$r, $d]) {
         ParkBooking::create([
-            'room_booking_id' => $rb->id,
+            'reservation_id'  => $r->id,
             'park_id'         => $park->id,
-            'date'            => $date,
-            'guests'          => $rb->guests,
+            'date'            => $d,
+            'guests'          => 2,
             'status'          => 'confirmed',
             'price_per_guest' => $park->price,
-            'total_price'     => (float) $park->price * $rb->guests,
+            'total_price'     => (float) $park->price * 2,
         ]);
     }
 
@@ -472,36 +545,34 @@ test('superadmin sees every park booking', function () {
 });
 
 test('customer index only returns their own park bookings', function () {
-    [, $typeA]        = seedRoomSetup();
-    [, $typeB]        = seedRoomSetup();
-    $me               = parkCustomer();
-    $other            = parkCustomer();
-    [$rbMine, $dMine] = bookedStayFor($me, $typeA);
-    [$rbTheirs, $dTheirs] = bookedStayFor($other, $typeB);
-    $park             = openEveryDayPark();
+    $me    = parkCustomer();
+    $other = parkCustomer();
+    [$rMine, $dMine]     = singleRoomReservation($me);
+    [$rTheirs, $dTheirs] = singleRoomReservation($other);
+    $park                = openEveryDayPark();
 
     ParkBooking::create([
-        'room_booking_id' => $rbMine->id,
+        'reservation_id'  => $rMine->id,
         'park_id'         => $park->id,
         'date'            => $dMine,
-        'guests'          => $rbMine->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rbMine->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
     ParkBooking::create([
-        'room_booking_id' => $rbTheirs->id,
+        'reservation_id'  => $rTheirs->id,
         'park_id'         => $park->id,
         'date'            => $dTheirs,
-        'guests'          => $rbTheirs->guests,
+        'guests'          => 2,
         'status'          => 'confirmed',
         'price_per_guest' => $park->price,
-        'total_price'     => (float) $park->price * $rbTheirs->guests,
+        'total_price'     => (float) $park->price * 2,
     ]);
 
     $this->actingAs($me)
         ->getJson('/api/park-bookings')
         ->assertOk()
         ->assertJsonCount(1, 'data')
-        ->assertJsonPath('data.0.room_booking_id', $rbMine->id);
+        ->assertJsonPath('data.0.reservation_id', $rMine->id);
 });

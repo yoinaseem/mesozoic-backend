@@ -114,7 +114,7 @@ Roles seeded by `RolesAndPermissionsSeeder`:
 | `superadmin` | everything | `before()` short-circuits every policy. |
 | `hotel-manager` | hotels they're assigned to (`hotel_user` pivot) | Can `hotels.update`, full CRUD on `room-types` and `rooms` of those hotels. Cannot create/delete hotels. |
 | `ferry-manager` | all ferries | Has `ferry.view`, `ferry.create`, `ferry.update`. **No middleware enforces these on ferry routes today** — see §7. |
-| `park-manager` | (no endpoints yet) | Permissions seeded for forward-compat. |
+| `park-manager` | all park bookings | Has `bookings.view`, `bookings.update`, `bookings.cancel` — wired to §9 park-bookings routes. **Does not** have `bookings.create` (customers purchase their own day passes). |
 | `beach-manager` | all beach activities | Has `beach.view`, `beach.create`, `beach.update`. Wired to routes. |
 | `customer` | none | Default role on self-register. No permissions. |
 
@@ -385,7 +385,83 @@ status        optional, in:pending,confirmed,cancelled  (default: pending)
 
 ---
 
-#### 9. Suggested Next.js Client Layout
+#### 9. Park Bookings
+
+A park booking is a day-pass admission ticket tied to a `Reservation` (the trip envelope containing one or more room bookings). One booking covers `guests` people admitted to `park` on `date`.
+
+The guest count is validated against `Reservation::seatPoolOn(date)` — the sum of confirmed room-booking guests active on that date with **exclusive checkout** (`check_in_date <= date < check_out_date`). This lets a single booking cover a group spread across multiple rooms (e.g. a family of 6 across 3 rooms buys one 6-guest day pass). It also means the check-out date always has a seat pool of 0 and is rejected.
+
+Prerequisite: the caller's reservation must already have at least one confirmed `RoomBooking` covering `date`. The `Reservation`, `RoomBooking`, and `ThemePark` modules are not yet documented in this file — consult the Laravel controllers until a follow-up PR adds them.
+
+`ParkBookingResource`:
+```json
+{
+  "id": 42,
+  "reservation_id": 7,
+  "park_id": 1,
+  "date": "2026-05-02",
+  "guests": 6,
+  "status": "confirmed",       // confirmed | cancelled
+  "price_per_guest": "45.00",
+  "total_price": "270.00",
+  "cancelled_at": null,
+  "reservation": { /* ReservationResource when eager-loaded */ },
+  "park": { /* ThemeParkResource when eager-loaded */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/park-bookings` | bearer | `bookings.view` | customer sees only their own; park-manager + superadmin see all |
+| GET    | `/park-bookings/{park_booking}` | bearer | `bookings.view` | owner, park-manager, or superadmin |
+| POST   | `/park-bookings` | bearer | `bookings.create` | superadmin, or customer attaching to their own reservation |
+| PUT/PATCH | `/park-bookings/{park_booking}` | bearer | `bookings.update` | park-manager or superadmin (customers cannot PATCH) |
+| DELETE | `/park-bookings/{park_booking}` | bearer | `bookings.cancel` | owner (only before visit date), park-manager, or superadmin |
+
+Routes are wired **per-verb** (not pipe-OR) because `customer` has `bookings.create|view|cancel` but not `bookings.update` — a pipe-OR would leak `PATCH` to customers at the middleware layer before the policy could deny it.
+
+Index filters (all optional, AND-combined): `?status=confirmed|cancelled`, `?park_id=`, `?reservation_id=`, `?date=YYYY-MM-DD`. Pagination is Laravel default (15/page).
+
+Validation `POST`:
+```
+reservation_id  required, exists:reservations
+park_id         required, exists:theme_parks
+date            required, date, after_or_equal:today
+guests          required, integer, min:1
+```
+
+Additional server-side business rules enforced in `ParkBookingController::store`, each returning `422` with a specific validation key on failure:
+
+- **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / park-manager bypass).
+- **Seat pool > 0** (`errors.date`): `Reservation::seatPoolOn(date) > 0` — at least one confirmed room active. Check-out date is excluded.
+- **Seat pool cap** (`errors.guests`): `guests <= seatPoolOn(date)`. Partial-group visits (`guests < seatPoolOn`) are allowed.
+- **Park open** (`errors.date`): `ThemePark::isOpenOn(date) === true` (override > baseline > `not_configured` → closed).
+- **Uniqueness** (`errors.date`): no existing confirmed `ParkBooking` for the same `(reservation_id, park_id, date)`. Cancelled rows don't block — cancel, then rebook. Uniqueness is per-park, so the same reservation could hold passes for two different parks on the same date once more parks exist.
+- **Capacity** (`errors.park_id`): `Σ confirmed guests on (park_id, date) + guests <= park.capacity`.
+
+On create, `price_per_guest = park.price` and `total_price = park.price × guests` are derived server-side (any client-submitted values for these fields are ignored). Created rows default to `status="confirmed"`.
+
+Validation `PATCH`:
+```
+status  sometimes, in:confirmed,cancelled
+date    sometimes, date
+guests  sometimes, integer, min:1
+```
+If `date` or `guests` change, the seat-pool, open-on-date, uniqueness, and capacity checks are re-run against the new values. `total_price` is recomputed when `guests` changes (same `bcmul(price_per_guest × guests, 2)` formula). Setting `status=cancelled` also sets `cancelled_at = now()`.
+
+`DELETE` — soft cancel:
+- Sets `status=cancelled` and `cancelled_at=now()`; returns `204` with no body. The row is preserved for audit.
+- Customers can cancel only **before** the visit date (`now()->toDateString() < booking.date`). On or after the visit date, only park-manager / superadmin can cancel.
+
+**Cancellation cascade (known gap).** Cancelling a `RoomBooking` that drops `seatPoolOn(date)` to 0 does **not** auto-cancel attached park bookings today. Treat this on the client as a potential stale-ticket risk until the cascade lands. Tracked as a follow-up against `RoomBookingController::enforceSeatPoolInvariantOrFail`.
+
+**Multi-park note.** The database currently holds a hard limit of one `ThemePark`. The controller and uniqueness rule are already multi-park-ready — when more parks are added, the per-park uniqueness key supports splits (parents at Park A, kids at Park B on the same date) without code changes.
+
+---
+
+#### 10. Suggested Next.js Client Layout
 
 A minimal sketch — adapt to your routing conventions.
 
@@ -433,7 +509,7 @@ if (res.status === 422) {
 
 ---
 
-#### 10. Quick Reference: Endpoint Index
+#### 11. Quick Reference: Endpoint Index
 
 ```
 PUBLIC
@@ -492,4 +568,10 @@ DELETE /api/ferries/{ferry}                                   [auth-only]
 POST   /api/ferry-schedules                                   [auth-only]
 PUT    /api/ferry-schedules/{ferry_schedule}                  [auth-only]
 DELETE /api/ferry-schedules/{ferry_schedule}                  [auth-only]
+
+GET    /api/park-bookings                                     [bookings.view — customer: own only; park-manager/superadmin: all]
+GET    /api/park-bookings/{park_booking}                      [bookings.view]
+POST   /api/park-bookings                                     [bookings.create — customer attaches to own reservation]
+PUT    /api/park-bookings/{park_booking}                      [bookings.update — park-manager or superadmin]
+DELETE /api/park-bookings/{park_booking}                      [bookings.cancel — owner before visit date, or park-manager/superadmin]
 ```

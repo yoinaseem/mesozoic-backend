@@ -26,6 +26,11 @@ class Reservation extends Model
         return $this->hasMany(RoomBooking::class);
     }
 
+    public function parkBookings(): HasMany
+    {
+        return $this->hasMany(ParkBooking::class);
+    }
+
     /**
      * Seats contributed by confirmed room bookings active on $date.
      * Ticket-booking modules (ferry/park/beach) call this to cap how many

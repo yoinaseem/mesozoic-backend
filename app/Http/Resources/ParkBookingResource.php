@@ -11,7 +11,7 @@ class ParkBookingResource extends JsonResource
     {
         return [
             'id'              => $this->id,
-            'room_booking_id' => $this->room_booking_id,
+            'reservation_id'  => $this->reservation_id,
             'park_id'         => $this->park_id,
             'date'            => $this->date?->format('Y-m-d'),
             'guests'          => $this->guests,
@@ -21,7 +21,7 @@ class ParkBookingResource extends JsonResource
             'cancelled_at'    => $this->cancelled_at,
             'created_at'      => $this->created_at,
             'updated_at'      => $this->updated_at,
-            'room_booking'    => new RoomBookingResource($this->whenLoaded('roomBooking')),
+            'reservation'     => new ReservationResource($this->whenLoaded('reservation')),
             'park'            => new ThemeParkResource($this->whenLoaded('park')),
         ];
     }

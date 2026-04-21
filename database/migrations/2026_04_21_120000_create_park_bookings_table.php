@@ -10,7 +10,7 @@ return new class extends Migration
     {
         Schema::create('park_bookings', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('room_booking_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('reservation_id')->constrained()->cascadeOnDelete();
             $table->foreignId('park_id')->constrained('theme_parks')->restrictOnDelete();
             $table->date('date');
             $table->unsignedSmallInteger('guests');
@@ -21,7 +21,7 @@ return new class extends Migration
             $table->timestamps();
 
             $table->index(['park_id', 'date', 'status']);
-            $table->index(['room_booking_id', 'status']);
+            $table->index(['reservation_id', 'status']);
         });
     }
 

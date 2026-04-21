@@ -4,9 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ParkBookingResource;
 use App\Models\ParkBooking;
-use App\Models\RoomBooking;
+use App\Models\Reservation;
 use App\Models\ThemePark;
-use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -23,12 +22,12 @@ class ParkBookingController extends Controller
         $this->authorize('viewAny', ParkBooking::class);
         $user = $request->user();
 
-        $query = ParkBooking::query()->with(['roomBooking.reservation.user', 'park']);
+        $query = ParkBooking::query()->with(['reservation.user', 'park']);
 
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
-            // no scope — park-manager sees every park today (no per-park pivot)
+            // no scope — park-manager has no per-park pivot today
         } else {
-            $query->whereHas('roomBooking.reservation', fn ($q) => $q->where('user_id', $user->id));
+            $query->whereHas('reservation', fn ($q) => $q->where('user_id', $user->id));
         }
 
         if ($status = $request->query('status')) {
@@ -37,8 +36,8 @@ class ParkBookingController extends Controller
         if ($parkId = $request->query('park_id')) {
             $query->where('park_id', $parkId);
         }
-        if ($roomBookingId = $request->query('room_booking_id')) {
-            $query->where('room_booking_id', $roomBookingId);
+        if ($reservationId = $request->query('reservation_id')) {
+            $query->where('reservation_id', $reservationId);
         }
         if ($date = $request->query('date')) {
             $query->whereDate('date', $date);
@@ -53,7 +52,7 @@ class ParkBookingController extends Controller
     {
         $this->authorize('view', $parkBooking);
 
-        $parkBooking->load(['roomBooking.reservation.user', 'park']);
+        $parkBooking->load(['reservation.user', 'park']);
 
         return new ParkBookingResource($parkBooking);
     }
@@ -64,42 +63,36 @@ class ParkBookingController extends Controller
         $user = $request->user();
 
         $data = $request->validate([
-            'room_booking_id' => ['required', Rule::exists('room_bookings', 'id')],
-            'park_id'         => ['required', Rule::exists('theme_parks', 'id')],
-            'date'            => ['required', 'date', 'after_or_equal:today'],
+            'reservation_id' => ['required', Rule::exists('reservations', 'id')],
+            'park_id'        => ['required', Rule::exists('theme_parks', 'id')],
+            'date'           => ['required', 'date', 'after_or_equal:today'],
+            'guests'         => ['required', 'integer', 'min:1'],
         ]);
 
-        $roomBooking = RoomBooking::findOrFail($data['room_booking_id']);
+        $reservation = Reservation::findOrFail($data['reservation_id']);
         $park        = ThemePark::findOrFail($data['park_id']);
 
-        $this->assertRoomBookingOwnedByCaller($user, $roomBooking);
-
-        if ($roomBooking->status !== 'confirmed') {
-            throw ValidationException::withMessages([
-                'room_booking_id' => ['The linked room booking must be confirmed.'],
-            ]);
-        }
-
-        $this->assertDateInsideStayWindow($roomBooking, $data['date']);
+        $this->assertReservationOwnedByCaller($user, $reservation);
+        $this->assertReservationActiveOn($reservation, $data['date'], $data['guests']);
         $this->assertParkOpenOn($park, $data['date']);
-        $this->assertNoDuplicateDayPass($roomBooking->id, $data['date']);
-        $this->assertParkCapacityAvailable($park, $data['date'], $roomBooking->guests);
+        $this->assertNoDuplicatePerPark($reservation->id, $park->id, $data['date']);
+        $this->assertParkCapacityAvailable($park, $data['date'], $data['guests']);
 
         $pricePerGuest = $park->price;
-        $totalPrice    = bcmul((string) $pricePerGuest, (string) $roomBooking->guests, 2);
+        $totalPrice    = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
 
         $booking = ParkBooking::create([
-            'room_booking_id' => $roomBooking->id,
+            'reservation_id'  => $reservation->id,
             'park_id'         => $park->id,
             'date'            => $data['date'],
-            'guests'          => $roomBooking->guests,
+            'guests'          => $data['guests'],
             'status'          => 'confirmed',
             'price_per_guest' => $pricePerGuest,
             'total_price'     => $totalPrice,
         ]);
 
         return (new ParkBookingResource(
-            $booking->load(['roomBooking.reservation.user', 'park'])
+            $booking->load(['reservation.user', 'park'])
         ))->response()->setStatusCode(201);
     }
 
@@ -110,19 +103,42 @@ class ParkBookingController extends Controller
         $data = $request->validate([
             'status' => ['sometimes', Rule::in(['confirmed', 'cancelled'])],
             'date'   => ['sometimes', 'date'],
+            'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
-        if (array_key_exists('date', $data)) {
-            $roomBooking = $parkBooking->roomBooking;
-            $this->assertDateInsideStayWindow($roomBooking, $data['date']);
-            $this->assertParkOpenOn($parkBooking->park, $data['date']);
-            $this->assertNoDuplicateDayPass($roomBooking->id, $data['date'], $parkBooking->id);
+        $dateChanges   = array_key_exists('date', $data);
+        $guestsChanges = array_key_exists('guests', $data);
+
+        if ($dateChanges || $guestsChanges) {
+            $date   = $data['date']   ?? $parkBooking->date->toDateString();
+            $guests = $data['guests'] ?? $parkBooking->guests;
+
+            $this->assertReservationActiveOn($parkBooking->reservation, $date, $guests);
+
+            if ($dateChanges) {
+                $this->assertParkOpenOn($parkBooking->park, $date);
+                $this->assertNoDuplicatePerPark(
+                    $parkBooking->reservation_id,
+                    $parkBooking->park_id,
+                    $date,
+                    $parkBooking->id,
+                );
+            }
+
             $this->assertParkCapacityAvailable(
                 $parkBooking->park,
-                $data['date'],
-                $parkBooking->guests,
+                $date,
+                $guests,
                 $parkBooking->id,
             );
+
+            if ($guestsChanges) {
+                $data['total_price'] = bcmul(
+                    (string) $parkBooking->price_per_guest,
+                    (string) $guests,
+                    2,
+                );
+            }
         }
 
         if (($data['status'] ?? null) === 'cancelled' && $parkBooking->status !== 'cancelled') {
@@ -132,7 +148,7 @@ class ParkBookingController extends Controller
         $parkBooking->update($data);
 
         return new ParkBookingResource(
-            $parkBooking->load(['roomBooking.reservation.user', 'park'])
+            $parkBooking->load(['reservation.user', 'park'])
         );
     }
 
@@ -148,32 +164,41 @@ class ParkBookingController extends Controller
         return response()->json(null, 204);
     }
 
-    private function assertRoomBookingOwnedByCaller(\App\Models\User $user, RoomBooking $roomBooking): void
+    private function assertReservationOwnedByCaller(\App\Models\User $user, Reservation $reservation): void
     {
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
             return;
         }
 
-        if ($roomBooking->reservation->user_id !== $user->id) {
+        if ($reservation->user_id !== $user->id) {
             throw ValidationException::withMessages([
-                'room_booking_id' => ['This room booking does not belong to you.'],
+                'reservation_id' => ['This reservation does not belong to you.'],
             ]);
         }
     }
 
     /**
-     * Date must fall inside [check_in, check_out). Last day (check-out) is
-     * excluded — guests are leaving that morning.
+     * A reservation is "active" on $date iff seatPoolOn($date) > 0 — i.e. at
+     * least one confirmed room booking covers the date (exclusive checkout).
+     * The incoming ticket count must fit inside that pool.
+     *
+     * This single check replaces the old check_in..check_out window logic and
+     * naturally handles the multi-room case (father books 3 rooms for 6 people
+     * → pool is 6 on shared dates, guests ≤ 6).
      */
-    private function assertDateInsideStayWindow(RoomBooking $roomBooking, string $date): void
+    private function assertReservationActiveOn(Reservation $reservation, string $date, int $guests): void
     {
-        $d        = CarbonImmutable::parse($date)->startOfDay();
-        $checkIn  = CarbonImmutable::parse($roomBooking->check_in_date->toDateString())->startOfDay();
-        $checkOut = CarbonImmutable::parse($roomBooking->check_out_date->toDateString())->startOfDay();
+        $pool = $reservation->seatPoolOn($date);
 
-        if ($d->lt($checkIn) || $d->gte($checkOut)) {
+        if ($pool === 0) {
             throw ValidationException::withMessages([
-                'date' => ['Park date must fall within the room booking stay (check-in included, check-out excluded).'],
+                'date' => ['The reservation has no confirmed rooms active on this date (check-out day is excluded).'],
+            ]);
+        }
+
+        if ($guests > $pool) {
+            throw ValidationException::withMessages([
+                'guests' => ["Guests exceed the reservation's seat pool of {$pool} on this date."],
             ]);
         }
     }
@@ -188,13 +213,21 @@ class ParkBookingController extends Controller
     }
 
     /**
-     * One day pass per (room booking, date) among confirmed rows.
-     * Cancelled rows don't count — customer can re-book after cancelling.
+     * One day-pass per (reservation, park, date) among confirmed rows. Cancelled
+     * rows don't count — customer can re-book after cancelling. Uniqueness is
+     * per-park so a multi-park future can split: parents at Park A, kids at
+     * Park B on the same date. The current DB has only one park, but the rule
+     * scales.
      */
-    private function assertNoDuplicateDayPass(int $roomBookingId, string $date, ?int $ignoreBookingId = null): void
-    {
+    private function assertNoDuplicatePerPark(
+        int $reservationId,
+        int $parkId,
+        string $date,
+        ?int $ignoreBookingId = null,
+    ): void {
         $exists = ParkBooking::query()
-            ->where('room_booking_id', $roomBookingId)
+            ->where('reservation_id', $reservationId)
+            ->where('park_id', $parkId)
             ->where('status', 'confirmed')
             ->whereDate('date', $date)
             ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
@@ -202,15 +235,15 @@ class ParkBookingController extends Controller
 
         if ($exists) {
             throw ValidationException::withMessages([
-                'date' => ['This room booking already has a park day-pass for that date.'],
+                'date' => ['This reservation already has a day-pass for this park on that date.'],
             ]);
         }
     }
 
     /**
-     * Confirmed guests across all bookings for (park, date) plus the incoming
-     * guest count must not exceed park.capacity. Like RoomBookingController's
-     * availability check, this is count-then-insert — acceptable for scope.
+     * Count-then-insert capacity check: Σ confirmed guests on (park, date) plus
+     * the incoming guests must fit within park.capacity. Mirrors the pattern
+     * used by RoomBookingController::assertAvailability.
      */
     private function assertParkCapacityAvailable(
         ThemePark $park,

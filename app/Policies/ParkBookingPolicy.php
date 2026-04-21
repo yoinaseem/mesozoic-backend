@@ -23,12 +23,10 @@ class ParkBookingPolicy
             return false;
         }
 
-        // Owner of the underlying reservation always sees their own tickets.
-        if ($booking->roomBooking->reservation->user_id === $user->id) {
+        if ($booking->reservation->user_id === $user->id) {
             return true;
         }
 
-        // Park-manager role sees all park bookings (no per-park pivot today).
         return $user->hasRole('park-manager');
     }
 
@@ -49,8 +47,7 @@ class ParkBookingPolicy
             return false;
         }
 
-        // Customer can cancel their own ticket only before the visit date.
-        if ($booking->roomBooking->reservation->user_id === $user->id) {
+        if ($booking->reservation->user_id === $user->id) {
             return now()->toDateString() < $booking->date->toDateString();
         }
 

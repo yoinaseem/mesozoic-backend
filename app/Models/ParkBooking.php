@@ -14,7 +14,7 @@ class ParkBooking extends Model
     public const STATUS_CANCELLED = 'cancelled';
 
     protected $fillable = [
-        'room_booking_id',
+        'reservation_id',
         'park_id',
         'date',
         'guests',
@@ -32,9 +32,9 @@ class ParkBooking extends Model
         'total_price'     => 'decimal:2',
     ];
 
-    public function roomBooking(): BelongsTo
+    public function reservation(): BelongsTo
     {
-        return $this->belongsTo(RoomBooking::class);
+        return $this->belongsTo(Reservation::class);
     }
 
     public function park(): BelongsTo
