@@ -8,18 +8,19 @@ return new class extends Migration
 {
     public function up(): void
     {
-        Schema::create('ferries', function (Blueprint $table) {
+        Schema::create('ferry_types', function (Blueprint $table) {
             $table->id();
-            $table->foreignId('ferry_type_id')->constrained()->cascadeOnDelete();
             $table->string('name');
+            $table->text('description')->nullable();
+            $table->string('image')->nullable();
+            $table->unsignedInteger('capacity')->default(1);
+            $table->decimal('price', 10, 2)->default(0);
             $table->timestamps();
-
-            $table->unique(['ferry_type_id', 'name']);
         });
     }
 
     public function down(): void
     {
-        Schema::dropIfExists('ferries');
+        Schema::dropIfExists('ferry_types');
     }
 };

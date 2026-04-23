@@ -249,48 +249,93 @@ room_no      string max:255 required, unique within {hotel}
 
 ---
 
-#### 7. Ferries & Ferry Schedules
+#### 7. Ferry Types, Ferries & Ferry Schedules
 
-`Ferry` and `FerrySchedule` controllers return raw model JSON (not Resource classes) — keys come straight from the DB columns + Eloquent timestamps.
+The ferry domain mirrors the Hotel/RoomType/Room shape: **`FerryType`** is the catalogue (price + capacity + description + image), **`Ferry`** is a physical vessel under a type (just `ferry_type_id + name`), and **`FerrySchedule`** is one departure of a vessel. Capacity and price always read through the type; vessels inherit both. Ferry bookings (§12) walk this chain to size capacity and compute totals.
 
-`Ferry` columns: `id, name, description, price (decimal:2), capacity, image, created_at, updated_at`. `GET /ferries/{ferry}` includes `schedules`.
+All ferry-side mutations are gated by `ferry.create | ferry.update | ferry.delete` — `ferry-manager` and `superadmin` can mutate vessels, types, and schedules. (Earlier doc revisions noted these as permissive; that gap is now closed.)
 
-`FerrySchedule` columns: `id, ferry_id, travel_date, departure_time, arrival_date, arrival_time, departure_port, arrival_port, status, created_at, updated_at`. `index`/`show`/`store`/`update` include the parent `ferry` object.
+`status` enum on `FerrySchedule`: `scheduled` (default), `completed`, `cancelled`.
 
-`status` enum: `scheduled` (default), `completed`, `cancelled`.
+##### Ferry Types
 
-##### Ferries
+`FerryTypeResource`:
+```json
+{
+  "id": 3,
+  "name": "Air Conditioned",
+  "description": "AC saloon ferry",
+  "image": null,
+  "capacity": 80,
+  "price": 60.0,
+  "ferries": [ /* FerryResource[] only on `show` */ ],
+  "ferries_count": 2,        // present on `show`
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
 
-| Method | Path | Auth | Authorization |
-|---|---|---|---|
-| GET    | `/ferries` | public | — |
-| GET    | `/ferries/{ferry}` | public | includes `schedules` |
-| POST   | `/ferries` | bearer | **only `auth:sanctum` — no permission middleware, no Ferry policy.** Any logged-in user can call it today. |
-| PUT/PATCH | `/ferries/{ferry}` | bearer | same |
-| DELETE | `/ferries/{ferry}` | bearer | same |
-
-Treat ferry mutations as superadmin/ferry-manager only on the **client**; the server is currently permissive. Hide the UI for everyone else and don't rely on the API for enforcement until this is tightened.
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/ferry-types` | public | — | — |
+| GET    | `/ferry-types/{ferry_type}` | public | — | includes `ferries` + `ferries_count` |
+| POST   | `/ferry-types` | bearer | `ferry.create\|ferry.update\|ferry.delete` | `ferry.create` |
+| PUT/PATCH | `/ferry-types/{ferry_type}` | bearer | (any) | `ferry.update` |
+| DELETE | `/ferry-types/{ferry_type}` | bearer | (any) | superadmin only (`FerryTypePolicy::delete` returns false) |
 
 Validation `POST`:
 ```
 name        string max:255 required
 description string nullable
-price       numeric min:0 required
-capacity    integer min:1 required
 image       string max:255 nullable
+capacity    integer min:1 required
+price       numeric min:0 required
 ```
-`PATCH`: same with `sometimes`.
+`PATCH`: every field `sometimes`.
+
+##### Ferries (vessels)
+
+`FerryResource`:
+```json
+{
+  "id": 9,
+  "ferry_type_id": 3,
+  "name": "Isla Express II",
+  "ferry_type": { /* FerryTypeResource — present when eager-loaded */ },
+  "schedules": [ /* FerryScheduleResource[] only on `show` */ ],
+  "schedules_count": 5,      // present on `show`
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+The vessel itself only carries `name` and the FK. Price and capacity live on the linked type — read them through `ferry.ferry_type`.
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/ferries` | public | — | — |
+| GET    | `/ferries/{ferry}` | public | — | includes `ferry_type` + `schedules` + `schedules_count` |
+| POST   | `/ferries` | bearer | `ferry.create\|ferry.update\|ferry.delete` | `ferry.create` |
+| PUT/PATCH | `/ferries/{ferry}` | bearer | (any) | `ferry.update` |
+| DELETE | `/ferries/{ferry}` | bearer | (any) | superadmin only |
+
+Validation `POST`:
+```
+ferry_type_id  required, exists:ferry_types
+name           string max:255 required
+```
+`PATCH`: both fields `sometimes`. Vessel `name` is unique per `ferry_type_id` (DB-level constraint).
 
 ##### Ferry Schedules
 
-| Method | Path | Auth |
-|---|---|---|
-| GET  | `/ferry-schedules` | public, paginated, includes `ferry` |
-| GET  | `/ferry-schedules/{ferry_schedule}` | public, includes `ferry` |
-| GET  | `/ferries/{ferry}/schedules` | public, schedules for one ferry, paginated |
-| POST | `/ferry-schedules` | bearer (no further checks — same caveat as ferries) |
-| PUT/PATCH | `/ferry-schedules/{ferry_schedule}` | bearer |
-| DELETE | `/ferry-schedules/{ferry_schedule}` | bearer |
+| Method | Path | Auth | Permission |
+|---|---|---|---|
+| GET  | `/ferry-schedules` | public, paginated, includes `ferry` | — |
+| GET  | `/ferry-schedules/{ferry_schedule}` | public, includes `ferry` | — |
+| GET  | `/ferries/{ferry}/schedules` | public, paginated | — |
+| POST | `/ferry-schedules` | bearer | `ferry.create\|ferry.update\|ferry.delete` |
+| PUT/PATCH | `/ferry-schedules/{ferry_schedule}` | bearer | (any) |
+| DELETE | `/ferry-schedules/{ferry_schedule}` | bearer | (any) |
 
 Validation `POST`:
 ```
@@ -664,9 +709,9 @@ Business rules enforced in `FerryBookingController::store`:
 - **Reservation covers travel date** (`errors.ferry_schedule_id`): `Reservation::ferrySeatPoolOn(travel_date) > 0` with inclusive check-in + check-out.
 - **Seat pool cap** (`errors.guests`): `guests <= ferrySeatPoolOn(travel_date)`.
 - **Uniqueness** (`errors.ferry_schedule_id`): no existing confirmed `FerryBooking` for `(reservation_id, ferry_schedule_id)`. Same ferry on the same date at a different departure time is a different schedule → allowed.
-- **Capacity** (`errors.ferry_schedule_id`): `Σ confirmed guests on the schedule + guests <= ferry.capacity`. Error message: `"There is no available space on this ferry."`
+- **Capacity** (`errors.ferry_schedule_id`): `Σ confirmed guests on the schedule + guests <= ferry.ferry_type.capacity`. Capacity lives on the type after the Hotel/RoomType-style restructure — vessels inherit it. Error message: `"There is no available space on this ferry."`
 
-On create, `price_per_guest = ferry.price`, `total_price = bcmul(ferry.price, guests, 2)`. Rows default to `status="confirmed"`.
+On create, `price_per_guest = ferry.ferry_type.price`, `total_price = bcmul(price_per_guest, guests, 2)`. Rows default to `status="confirmed"`.
 
 Validation `PATCH`:
 ```
@@ -743,6 +788,8 @@ GET    /api/beach-activities
 GET    /api/beach-activities/{beach_activity}
 GET    /api/beach-activities/{beach_activity}/schedules
 GET    /api/beach-activities/{beach_activity}/schedules/{schedule}
+GET    /api/ferry-types
+GET    /api/ferry-types/{ferry_type}
 GET    /api/ferries
 GET    /api/ferries/{ferry}
 GET    /api/ferries/{ferry}/schedules
@@ -781,13 +828,17 @@ POST   /api/beach-activities/{beach_activity}/schedules       [beach.create]
 PUT    /api/beach-activities/{beach_activity}/schedules/{schedule}  [beach.update]
 DELETE /api/beach-activities/{beach_activity}/schedules/{schedule}  [superadmin]
 
-POST   /api/ferries                                           [auth-only — see §7]
-PUT    /api/ferries/{ferry}                                   [auth-only]
-DELETE /api/ferries/{ferry}                                   [auth-only]
+POST   /api/ferry-types                                       [ferry.create → ferry-manager or superadmin]
+PUT    /api/ferry-types/{ferry_type}                          [ferry.update → ferry-manager or superadmin]
+DELETE /api/ferry-types/{ferry_type}                          [superadmin]
 
-POST   /api/ferry-schedules                                   [auth-only]
-PUT    /api/ferry-schedules/{ferry_schedule}                  [auth-only]
-DELETE /api/ferry-schedules/{ferry_schedule}                  [auth-only]
+POST   /api/ferries                                           [ferry.create → ferry-manager or superadmin]
+PUT    /api/ferries/{ferry}                                   [ferry.update → ferry-manager or superadmin]
+DELETE /api/ferries/{ferry}                                   [superadmin]
+
+POST   /api/ferry-schedules                                   [ferry.create → ferry-manager or superadmin]
+PUT    /api/ferry-schedules/{ferry_schedule}                  [ferry.update → ferry-manager or superadmin]
+DELETE /api/ferry-schedules/{ferry_schedule}                  [ferry.delete → superadmin]
 
 GET    /api/park-bookings                                     [bookings.view — customer: own only; park-manager/superadmin: all]
 GET    /api/park-bookings/{park_booking}                      [bookings.view]

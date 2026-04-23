@@ -4,28 +4,24 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Ferry extends Model
 {
     use HasFactory;
 
     protected $fillable = [
+        'ferry_type_id',
         'name',
-        'description',
-        'price',
-        'capacity',
-        'image',
     ];
 
-    protected function casts(): array
+    public function ferryType(): BelongsTo
     {
-        return [
-            'price' => 'decimal:2',
-            'capacity' => 'integer',
-        ];
+        return $this->belongsTo(FerryType::class);
     }
 
-    public function schedules()
+    public function schedules(): HasMany
     {
         return $this->hasMany(FerrySchedule::class);
     }

@@ -11,11 +11,9 @@ class FerryResource extends JsonResource
     {
         return [
             'id' => $this->id,
+            'ferry_type_id' => $this->ferry_type_id,
             'name' => $this->name,
-            'description' => $this->description,
-            'price' => $this->price !== null ? (float) $this->price : null,
-            'capacity' => $this->capacity,
-            'image' => $this->image,
+            'ferry_type' => new FerryTypeResource($this->whenLoaded('ferryType')),
             'schedules' => FerryScheduleResource::collection($this->whenLoaded('schedules')),
             'schedules_count' => $this->whenCounted('schedules'),
             'created_at' => $this->created_at,

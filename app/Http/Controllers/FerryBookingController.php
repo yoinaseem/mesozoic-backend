@@ -3,9 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\FerryBookingResource;
-use App\Models\Ferry;
 use App\Models\FerryBooking;
 use App\Models\FerrySchedule;
+use App\Models\FerryType;
 use App\Models\Reservation;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
@@ -23,7 +23,7 @@ class FerryBookingController extends Controller
         $this->authorize('viewAny', FerryBooking::class);
         $user = $request->user();
 
-        $query = FerryBooking::query()->with(['reservation.user', 'schedule.ferry']);
+        $query = FerryBooking::query()->with(['reservation.user', 'schedule.ferry.ferryType']);
 
         if ($user->hasRole('superadmin') || $user->hasRole('ferry-manager')) {
             // no scope
@@ -56,7 +56,7 @@ class FerryBookingController extends Controller
     {
         $this->authorize('view', $ferryBooking);
 
-        $ferryBooking->load(['reservation.user', 'schedule.ferry']);
+        $ferryBooking->load(['reservation.user', 'schedule.ferry.ferryType']);
 
         return new FerryBookingResource($ferryBooking);
     }
@@ -73,19 +73,19 @@ class FerryBookingController extends Controller
         ]);
 
         $reservation = Reservation::findOrFail($data['reservation_id']);
-        $schedule = FerrySchedule::with('ferry')->findOrFail($data['ferry_schedule_id']);
+        $schedule = FerrySchedule::with('ferry.ferryType')->findOrFail($data['ferry_schedule_id']);
 
-        /** @var Ferry $ferry */
-        $ferry = $schedule->ferry;
+        /** @var FerryType $type */
+        $type = $schedule->ferry->ferryType;
         $travelDate = $schedule->travel_date->toDateString();
 
         $this->assertReservationOwnedByCaller($user, $reservation);
         $this->assertScheduleBookable($schedule);
         $this->assertReservationCoversTravelDate($reservation, $travelDate, $data['guests']);
         $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
-        $this->assertFerryCapacityAvailable($ferry, $schedule, $data['guests']);
+        $this->assertFerryCapacityAvailable($type, $schedule, $data['guests']);
 
-        $pricePerGuest = $ferry->price;
+        $pricePerGuest = $type->price;
         $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
 
         $booking = FerryBooking::create([
@@ -98,7 +98,7 @@ class FerryBookingController extends Controller
         ]);
 
         return (new FerryBookingResource(
-            $booking->load(['reservation.user', 'schedule.ferry'])
+            $booking->load(['reservation.user', 'schedule.ferry.ferryType'])
         ))->response()->setStatusCode(201);
     }
 
@@ -112,12 +112,12 @@ class FerryBookingController extends Controller
         ]);
 
         if (array_key_exists('guests', $data)) {
-            $schedule = $ferryBooking->schedule()->with('ferry')->firstOrFail();
-            $ferry = $schedule->ferry;
+            $schedule = $ferryBooking->schedule()->with('ferry.ferryType')->firstOrFail();
+            $type = $schedule->ferry->ferryType;
             $travelDate = $schedule->travel_date->toDateString();
 
             $this->assertReservationCoversTravelDate($ferryBooking->reservation, $travelDate, $data['guests']);
-            $this->assertFerryCapacityAvailable($ferry, $schedule, $data['guests'], $ferryBooking->id);
+            $this->assertFerryCapacityAvailable($type, $schedule, $data['guests'], $ferryBooking->id);
 
             $data['total_price'] = bcmul(
                 (string) $ferryBooking->price_per_guest,
@@ -133,7 +133,7 @@ class FerryBookingController extends Controller
         $ferryBooking->update($data);
 
         return new FerryBookingResource(
-            $ferryBooking->load(['reservation.user', 'schedule.ferry'])
+            $ferryBooking->load(['reservation.user', 'schedule.ferry.ferryType'])
         );
     }
 
@@ -224,12 +224,13 @@ class FerryBookingController extends Controller
     }
 
     /**
-     * Count-then-insert capacity check against ferry.capacity (vessel
-     * capacity, which is the only capacity the model tracks). Mirrors the
-     * pattern used across the other booking modules.
+     * Count-then-insert capacity check against ferryType.capacity. Capacity
+     * lives on the type after the Hotel/RoomType-style restructure: a vessel
+     * inherits its seat count from its type. Mirrors the pattern used across
+     * the other booking modules.
      */
     private function assertFerryCapacityAvailable(
-        Ferry $ferry,
+        FerryType $type,
         FerrySchedule $schedule,
         int $incomingGuests,
         ?int $ignoreBookingId = null,
@@ -240,7 +241,7 @@ class FerryBookingController extends Controller
             ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
             ->sum('guests');
 
-        if (($confirmedGuests + $incomingGuests) > $ferry->capacity) {
+        if (($confirmedGuests + $incomingGuests) > $type->capacity) {
             throw ValidationException::withMessages([
                 'ferry_schedule_id' => ['There is no available space on this ferry.'],
             ]);

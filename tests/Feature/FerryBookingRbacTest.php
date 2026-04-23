@@ -3,6 +3,7 @@
 use App\Models\Ferry;
 use App\Models\FerryBooking;
 use App\Models\FerrySchedule;
+use App\Models\FerryType;
 use App\Models\Hotel;
 use App\Models\Reservation;
 use App\Models\RoomBooking;
@@ -65,12 +66,22 @@ function fbConfirmedRoomBooking(
 
 function fbFerry(int $capacity = 50, float $price = 40.0): Ferry
 {
-    return Ferry::create([
-        'name' => 'Isla Express',
+    /**
+     * After the FerryType restructure, capacity + price live on the type.
+     * A ferry is a vessel under a type that inherits both. Each call here
+     * spins up a fresh type so per-test capacity/price tweaks stay isolated.
+     */
+    $type = FerryType::create([
+        'name' => 'Type '.fake()->unique()->word(),
         'description' => 'Mainland → island shuttle',
-        'price' => $price,
-        'capacity' => $capacity,
         'image' => null,
+        'capacity' => $capacity,
+        'price' => $price,
+    ]);
+
+    return Ferry::create([
+        'ferry_type_id' => $type->id,
+        'name' => 'Isla Express '.fake()->unique()->numerify('###'),
     ]);
 }
 
@@ -214,8 +225,8 @@ test('ferry capacity cap reports no available space', function () {
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $ferry->price,
-        'total_price' => (float) $ferry->price * 2,
+        'price_per_guest' => $ferry->ferryType->price,
+        'total_price' => (float) $ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
@@ -344,8 +355,8 @@ test('customer cannot update a ferry booking', function () {
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->price,
-        'total_price' => (float) $schedule->ferry->price * 2,
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -363,8 +374,8 @@ test('customer cannot cancel their own ferry booking (staff only)', function () 
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->price,
-        'total_price' => (float) $schedule->ferry->price * 2,
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -383,8 +394,8 @@ test('customer cannot view another customers ferry booking', function () {
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->price,
-        'total_price' => (float) $schedule->ferry->price * 2,
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($stranger)
@@ -403,8 +414,8 @@ test('ferry-manager can cancel any ferry booking', function () {
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->price,
-        'total_price' => (float) $schedule->ferry->price * 2,
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -427,8 +438,8 @@ test('ferry-manager can update booking status', function () {
         'ferry_schedule_id' => $schedule->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->price,
-        'total_price' => (float) $schedule->ferry->price * 2,
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -450,8 +461,8 @@ test('superadmin sees every ferry booking', function () {
             'ferry_schedule_id' => $s->id,
             'guests' => 2,
             'status' => 'confirmed',
-            'price_per_guest' => $ferry->price,
-            'total_price' => (float) $ferry->price * 2,
+            'price_per_guest' => $ferry->ferryType->price,
+            'total_price' => (float) $ferry->ferryType->price * 2,
         ]);
     }
 
@@ -478,16 +489,16 @@ test('customer index only returns their own ferry bookings', function () {
         'ferry_schedule_id' => $sMine->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $ferry->price,
-        'total_price' => (float) $ferry->price * 2,
+        'price_per_guest' => $ferry->ferryType->price,
+        'total_price' => (float) $ferry->ferryType->price * 2,
     ]);
     FerryBooking::create([
         'reservation_id' => $rTheirs->id,
         'ferry_schedule_id' => $sTheirs->id,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $ferry->price,
-        'total_price' => (float) $ferry->price * 2,
+        'price_per_guest' => $ferry->ferryType->price,
+        'total_price' => (float) $ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($me)

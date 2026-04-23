@@ -7,6 +7,7 @@ use App\Http\Controllers\BeachBookingController;
 use App\Http\Controllers\FerryBookingController;
 use App\Http\Controllers\FerryController;
 use App\Http\Controllers\FerryScheduleController;
+use App\Http\Controllers\FerryTypeController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\ParkActivityBookingController;
 use App\Http\Controllers\ParkActivityController;
@@ -213,12 +214,28 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('permission:bookings.cancel');
 });
 
-// Ferries & schedules – read-only public, mutations protected (same pattern as hotels)
+// Ferry types & ferries & schedules — read-only public, mutations gated by ferry.* perms.
+// FerryType is the catalogue (price + capacity); Ferry is a physical vessel that inherits both.
+Route::apiResource('ferry-types', FerryTypeController::class)->only(['index', 'show']);
 Route::get('ferries/{ferry}/schedules', [FerryScheduleController::class, 'indexForFerry']);
 Route::apiResource('ferries', FerryController::class)->only(['index', 'show']);
 Route::apiResource('ferry-schedules', FerryScheduleController::class)->only(['index', 'show']);
 
 Route::middleware('auth:sanctum')->group(function () {
-    Route::apiResource('ferries', FerryController::class)->except(['index', 'show']);
-    Route::apiResource('ferry-schedules', FerryScheduleController::class)->except(['index', 'show']);
+    // FerryType mutations — pipe-OR middleware; per-verb check is in FerryTypePolicy.
+    Route::apiResource('ferry-types', FerryTypeController::class)->except(['index', 'show'])
+        ->middleware('permission:ferry.create|ferry.update|ferry.delete');
+
+    // Ferry (vessel) mutations — same per-verb gating as ferry-types.
+    Route::apiResource('ferries', FerryController::class)->except(['index', 'show'])
+        ->middleware('permission:ferry.create|ferry.update|ferry.delete');
+
+    // FerrySchedules — per-verb permission split (no FerrySchedulePolicy exists, so
+    // pipe-OR would let ferry-manager DELETE since they hold ferry.create/.update).
+    Route::post('/ferry-schedules', [FerryScheduleController::class, 'store'])
+        ->middleware('permission:ferry.create');
+    Route::match(['put', 'patch'], '/ferry-schedules/{ferry_schedule}', [FerryScheduleController::class, 'update'])
+        ->middleware('permission:ferry.update');
+    Route::delete('/ferry-schedules/{ferry_schedule}', [FerryScheduleController::class, 'destroy'])
+        ->middleware('permission:ferry.delete');
 });
