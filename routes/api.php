@@ -7,6 +7,7 @@ use App\Http\Controllers\BeachBookingController;
 use App\Http\Controllers\FerryController;
 use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\HotelController;
+use App\Http\Controllers\ParkActivityBookingController;
 use App\Http\Controllers\ParkActivityController;
 use App\Http\Controllers\ParkActivityScheduleController;
 use App\Http\Controllers\ParkBookingController;
@@ -178,6 +179,21 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['put', 'patch'], '/beach-bookings/{beach_booking}', [BeachBookingController::class, 'update'])
         ->middleware('permission:bookings.update');
     Route::delete('/beach-bookings/{beach_booking}', [BeachBookingController::class, 'destroy'])
+        ->middleware('permission:bookings.cancel');
+
+    // ParkActivityBookings — session ticket tied to a ParkActivitySchedule.
+    // Requires a confirmed ParkBooking (day-pass) on the same park+date via
+    // ParkActivityBookingController::assertHoldsDayPass. Cancellation is
+    // staff-only (policy requires park-manager); customers POST but not DELETE.
+    Route::get('/park-activity-bookings', [ParkActivityBookingController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/park-activity-bookings/{park_activity_booking}', [ParkActivityBookingController::class, 'show'])
+        ->middleware('permission:bookings.view');
+    Route::post('/park-activity-bookings', [ParkActivityBookingController::class, 'store'])
+        ->middleware('permission:bookings.create');
+    Route::match(['put', 'patch'], '/park-activity-bookings/{park_activity_booking}', [ParkActivityBookingController::class, 'update'])
+        ->middleware('permission:bookings.update');
+    Route::delete('/park-activity-bookings/{park_activity_booking}', [ParkActivityBookingController::class, 'destroy'])
         ->middleware('permission:bookings.cancel');
 });
 

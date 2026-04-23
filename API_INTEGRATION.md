@@ -532,7 +532,81 @@ If `guests` changes, seat-pool and capacity checks are re-run. `total_price` is 
 
 ---
 
-#### 11. Suggested Next.js Client Layout
+#### 11. Park Activity Bookings
+
+A park activity booking is a session ticket tied to a single `ParkActivitySchedule` (which pins a `ParkActivity` to a date + start_time within a `ThemePark`). One booking covers `guests` people for that session. Booking date is derived from `schedule.date` — no separate `date` column.
+
+**Coupling rule — prerequisite `ParkBooking` required.** Unlike beach bookings, a park activity booking requires the caller's `Reservation` to already hold a confirmed `ParkBooking` (day-pass) for the same park on the same date. The activity-booking guest count must also be ≤ the day-pass guest count. Rationale: you need park admission to attend an activity inside it.
+
+The standard seat-pool rule still applies in addition to the coupling rule (guard against stale tickets if a room-booking cancellation left a day-pass orphaned — see known gap below).
+
+**Cancellation is staff-only** (same as beach bookings; diverges from park day-pass bookings).
+
+`ParkActivityBookingResource`:
+```json
+{
+  "id": 54,
+  "reservation_id": 7,
+  "park_activity_schedule_id": 18,
+  "guests": 2,
+  "status": "confirmed",       // confirmed | cancelled
+  "price_per_guest": "30.00",
+  "total_price": "60.00",
+  "cancelled_at": null,
+  "reservation": { /* ReservationResource when eager-loaded */ },
+  "schedule":    { /* ParkActivityScheduleResource when eager-loaded (includes `activity` + park) */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/park-activity-bookings` | bearer | `bookings.view` | customer sees only their own; park-manager + superadmin see all |
+| GET    | `/park-activity-bookings/{park_activity_booking}` | bearer | `bookings.view` | owner, park-manager, or superadmin |
+| POST   | `/park-activity-bookings` | bearer | `bookings.create` | superadmin, or customer attaching to their own reservation |
+| PUT/PATCH | `/park-activity-bookings/{park_activity_booking}` | bearer | `bookings.update` | park-manager or superadmin (customers cannot PATCH) |
+| DELETE | `/park-activity-bookings/{park_activity_booking}` | bearer | `bookings.cancel` | park-manager or superadmin only (customers cannot cancel) |
+
+Routes are per-verb (not pipe-OR) — same reasoning as `/park-bookings` and `/beach-bookings`.
+
+Index filters (all optional, AND-combined): `?status=confirmed|cancelled`, `?park_activity_schedule_id=`, `?park_activity_id=`, `?park_id=`, `?reservation_id=`, `?date=YYYY-MM-DD`. Pagination is Laravel default (15/page).
+
+Validation `POST`:
+```
+reservation_id             required, exists:reservations
+park_activity_schedule_id  required, exists:park_activity_schedules
+guests                     required, integer, min:1
+```
+
+Additional server-side business rules enforced in `ParkActivityBookingController::store`, each returning `422` with a specific validation key on failure:
+
+- **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / park-manager bypass).
+- **Schedule bookable** (`errors.park_activity_schedule_id`): schedule `status === 'scheduled'` (not `cancelled` / `completed`) and `date >= today`.
+- **Park open** (`errors.park_activity_schedule_id`): `ThemePark::isOpenOn(date) === true`.
+- **Seat pool > 0** (`errors.park_activity_schedule_id`): `Reservation::seatPoolOn(date) > 0`.
+- **Seat pool cap** (`errors.guests`): `guests <= seatPoolOn(date)`.
+- **Day-pass prerequisite** (`errors.reservation_id`): reservation must hold a confirmed `ParkBooking` for `(park_id, date)`.
+- **Day-pass cap** (`errors.guests`): `guests <= day-pass.guests`.
+- **Uniqueness** (`errors.park_activity_schedule_id`): no existing confirmed `ParkActivityBooking` for the same `(reservation_id, schedule_id)`.
+- **Capacity** (`errors.park_activity_schedule_id`): `Σ confirmed guests on the schedule + guests <= activity.max_capacity`.
+
+On create, `price_per_guest = activity.price`, `total_price = bcmul(activity.price, guests, 2)`. Rows default to `status="confirmed"`.
+
+Validation `PATCH`:
+```
+status  sometimes, in:confirmed,cancelled
+guests  sometimes, integer, min:1
+```
+If `guests` changes, seat-pool, day-pass, and capacity checks are re-run; `total_price` is recomputed. Schedule swap is not supported on PATCH — cancel and re-book.
+
+`DELETE` — soft cancel (staff-only): sets `status=cancelled`, `cancelled_at=now()`, returns `204`. Customer call → `403`.
+
+**Cancellation cascade** — same known gap shared by park and beach bookings: cancelling the underlying `RoomBooking` or `ParkBooking` does not auto-cancel attached activity bookings.
+
+---
+
+#### 12. Suggested Next.js Client Layout
 
 A minimal sketch — adapt to your routing conventions.
 
@@ -580,7 +654,7 @@ if (res.status === 422) {
 
 ---
 
-#### 11. Quick Reference: Endpoint Index
+#### 13. Quick Reference: Endpoint Index
 
 ```
 PUBLIC
@@ -645,4 +719,16 @@ GET    /api/park-bookings/{park_booking}                      [bookings.view]
 POST   /api/park-bookings                                     [bookings.create — customer attaches to own reservation]
 PUT    /api/park-bookings/{park_booking}                      [bookings.update — park-manager or superadmin]
 DELETE /api/park-bookings/{park_booking}                      [bookings.cancel — owner before visit date, or park-manager/superadmin]
+
+GET    /api/beach-bookings                                    [bookings.view — customer: own only; beach-manager/superadmin: all]
+GET    /api/beach-bookings/{beach_booking}                    [bookings.view]
+POST   /api/beach-bookings                                    [bookings.create — customer attaches to own reservation]
+PUT    /api/beach-bookings/{beach_booking}                    [bookings.update — beach-manager or superadmin]
+DELETE /api/beach-bookings/{beach_booking}                    [bookings.cancel — beach-manager or superadmin only]
+
+GET    /api/park-activity-bookings                            [bookings.view — customer: own only; park-manager/superadmin: all]
+GET    /api/park-activity-bookings/{park_activity_booking}    [bookings.view]
+POST   /api/park-activity-bookings                            [bookings.create — requires prerequisite day-pass (ParkBooking)]
+PUT    /api/park-activity-bookings/{park_activity_booking}    [bookings.update — park-manager or superadmin]
+DELETE /api/park-activity-bookings/{park_activity_booking}    [bookings.cancel — park-manager or superadmin only]
 ```
