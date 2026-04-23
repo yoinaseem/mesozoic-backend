@@ -606,7 +606,82 @@ If `guests` changes, seat-pool, day-pass, and capacity checks are re-run; `total
 
 ---
 
-#### 12. Suggested Next.js Client Layout
+#### 12. Ferry Bookings
+
+A ferry booking is a trip ticket tied to a specific `FerrySchedule` (which pins a `Ferry` to `travel_date + departure_time` and carries `arrival_date/time + departure_port + arrival_port`). One booking covers `guests` people on that departure.
+
+**Divergence from on-island bookings — inclusive reservation window.** Park, beach, and park-activity bookings reject the check-out date because on-island service tickets use `seatPoolOn(date)` with exclusive checkout. Ferries are transport, so the check-out-day departure ferry is a primary use case. They use a sibling helper `Reservation::ferrySeatPoolOn(date)` with the inclusive window `check_in_date <= travel_date <= check_out_date`. Arrival-day ferries on `check_in_date` are bookable the same way.
+
+**Auto-confirm on create.** If every rule passes (ownership, schedule bookable, reservation covers travel date, no duplicate, capacity), `status=confirmed` immediately. If the vessel is full, the booking is rejected with `"There is no available space on this ferry."`
+
+**Cancellation is staff-only** (matches beach and park-activity bookings; diverges from park day-pass bookings).
+
+**No direction or port validation.** `departure_port` / `arrival_port` are free-text strings, so the server cannot classify a schedule as arrival vs. departure vs. inter-island. The frontend displays the schedule as-is.
+
+**No round-trip coupling.** A reservation can hold any number of ferry bookings on different schedules — e.g. outbound + return on the same day are two separate bookings on two `FerrySchedule` rows.
+
+`FerryBookingResource`:
+```json
+{
+  "id": 77,
+  "reservation_id": 7,
+  "ferry_schedule_id": 22,
+  "guests": 2,
+  "status": "confirmed",       // confirmed | cancelled
+  "price_per_guest": "40.00",
+  "total_price": "80.00",
+  "cancelled_at": null,
+  "reservation": { /* ReservationResource when eager-loaded */ },
+  "schedule":    { /* FerryScheduleResource when eager-loaded (includes `ferry`) */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/ferry-bookings` | bearer | `bookings.view` | customer sees only their own; ferry-manager + superadmin see all |
+| GET    | `/ferry-bookings/{ferry_booking}` | bearer | `bookings.view` | owner, ferry-manager, or superadmin |
+| POST   | `/ferry-bookings` | bearer | `bookings.create` | superadmin, or customer attaching to their own reservation |
+| PUT/PATCH | `/ferry-bookings/{ferry_booking}` | bearer | `bookings.update` | ferry-manager or superadmin |
+| DELETE | `/ferry-bookings/{ferry_booking}` | bearer | `bookings.cancel` | ferry-manager or superadmin only (customers cannot cancel) |
+
+Routes are per-verb — same reasoning as the other booking modules.
+
+Index filters (all optional, AND-combined): `?status=confirmed|cancelled`, `?ferry_schedule_id=`, `?ferry_id=`, `?reservation_id=`, `?travel_date=YYYY-MM-DD`. Pagination is Laravel default (15/page).
+
+Validation `POST`:
+```
+reservation_id     required, exists:reservations
+ferry_schedule_id  required, exists:ferry_schedules
+guests             required, integer, min:1
+```
+
+Business rules enforced in `FerryBookingController::store`:
+
+- **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / ferry-manager bypass).
+- **Schedule bookable** (`errors.ferry_schedule_id`): schedule `status === 'scheduled'` (not `cancelled` / `completed`) and `travel_date >= today`.
+- **Reservation covers travel date** (`errors.ferry_schedule_id`): `Reservation::ferrySeatPoolOn(travel_date) > 0` with inclusive check-in + check-out.
+- **Seat pool cap** (`errors.guests`): `guests <= ferrySeatPoolOn(travel_date)`.
+- **Uniqueness** (`errors.ferry_schedule_id`): no existing confirmed `FerryBooking` for `(reservation_id, ferry_schedule_id)`. Same ferry on the same date at a different departure time is a different schedule → allowed.
+- **Capacity** (`errors.ferry_schedule_id`): `Σ confirmed guests on the schedule + guests <= ferry.capacity`. Error message: `"There is no available space on this ferry."`
+
+On create, `price_per_guest = ferry.price`, `total_price = bcmul(ferry.price, guests, 2)`. Rows default to `status="confirmed"`.
+
+Validation `PATCH`:
+```
+status  sometimes, in:confirmed,cancelled
+guests  sometimes, integer, min:1
+```
+If `guests` changes, seat-pool and capacity checks are re-run; `total_price` is recomputed. Schedule swap is not supported on PATCH.
+
+`DELETE` — soft cancel (staff-only): sets `status=cancelled`, `cancelled_at=now()`, returns `204`. Customer call → `403`.
+
+**Cancellation cascade** — same known gap as the other booking modules: cancelling the underlying `RoomBooking` does not auto-cancel attached ferry bookings.
+
+---
+
+#### 13. Suggested Next.js Client Layout
 
 A minimal sketch — adapt to your routing conventions.
 
@@ -654,7 +729,7 @@ if (res.status === 422) {
 
 ---
 
-#### 13. Quick Reference: Endpoint Index
+#### 14. Quick Reference: Endpoint Index
 
 ```
 PUBLIC
@@ -731,4 +806,10 @@ GET    /api/park-activity-bookings/{park_activity_booking}    [bookings.view]
 POST   /api/park-activity-bookings                            [bookings.create — requires prerequisite day-pass (ParkBooking)]
 PUT    /api/park-activity-bookings/{park_activity_booking}    [bookings.update — park-manager or superadmin]
 DELETE /api/park-activity-bookings/{park_activity_booking}    [bookings.cancel — park-manager or superadmin only]
+
+GET    /api/ferry-bookings                                    [bookings.view — customer: own only; ferry-manager/superadmin: all]
+GET    /api/ferry-bookings/{ferry_booking}                    [bookings.view]
+POST   /api/ferry-bookings                                    [bookings.create — inclusive room-booking window]
+PUT    /api/ferry-bookings/{ferry_booking}                    [bookings.update — ferry-manager or superadmin]
+DELETE /api/ferry-bookings/{ferry_booking}                    [bookings.cancel — ferry-manager or superadmin only]
 ```

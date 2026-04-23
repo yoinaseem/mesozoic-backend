@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\BeachActivityController;
 use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\BeachBookingController;
+use App\Http\Controllers\FerryBookingController;
 use App\Http\Controllers\FerryController;
 use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\HotelController;
@@ -194,6 +195,21 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['put', 'patch'], '/park-activity-bookings/{park_activity_booking}', [ParkActivityBookingController::class, 'update'])
         ->middleware('permission:bookings.update');
     Route::delete('/park-activity-bookings/{park_activity_booking}', [ParkActivityBookingController::class, 'destroy'])
+        ->middleware('permission:bookings.cancel');
+
+    // FerryBookings — trip ticket tied to a FerrySchedule (specific departure).
+    // Uses the *inclusive* seat-pool window so arrival-day and departure-day
+    // ferries are both bookable (see Reservation::ferrySeatPoolOn).
+    // Cancellation is staff-only (policy requires ferry-manager).
+    Route::get('/ferry-bookings', [FerryBookingController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/ferry-bookings/{ferry_booking}', [FerryBookingController::class, 'show'])
+        ->middleware('permission:bookings.view');
+    Route::post('/ferry-bookings', [FerryBookingController::class, 'store'])
+        ->middleware('permission:bookings.create');
+    Route::match(['put', 'patch'], '/ferry-bookings/{ferry_booking}', [FerryBookingController::class, 'update'])
+        ->middleware('permission:bookings.update');
+    Route::delete('/ferry-bookings/{ferry_booking}', [FerryBookingController::class, 'destroy'])
         ->middleware('permission:bookings.cancel');
 });
 

@@ -62,7 +62,13 @@ class RolesAndPermissionsSeeder extends Seeder
         // Module managers get view, create, and update on their module. Delete stays
         // with superadmin. Unlike hotel-manager (which is pivot-scoped), these roles
         // manage all resources in their module without per-instance ownership.
-        $ferryManager->syncPermissions(['ferry.view', 'ferry.create', 'ferry.update']);
+        $ferryManager->syncPermissions([
+            'ferry.view', 'ferry.create', 'ferry.update',
+            // Ferry-managers need bookings.* to manage ferry trip bookings
+            // (see /api/ferry-bookings). Customers cannot self-cancel ferry
+            // bookings, so bookings.cancel routes through here.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
         $parkManager->syncPermissions([
             'park.view', 'park.create', 'park.update',
             // Park-managers need bookings.* to manage park day-pass bookings
