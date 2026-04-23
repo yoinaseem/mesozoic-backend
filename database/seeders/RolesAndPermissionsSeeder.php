@@ -40,12 +40,12 @@ class RolesAndPermissionsSeeder extends Seeder
             Permission::firstOrCreate(['name' => $name, 'guard_name' => 'web']);
         }
 
-        $superadmin    = Role::firstOrCreate(['name' => 'superadmin', 'guard_name' => 'web']);
-        $hotelManager  = Role::firstOrCreate(['name' => 'hotel-manager', 'guard_name' => 'web']);
-        $ferryManager  = Role::firstOrCreate(['name' => 'ferry-manager', 'guard_name' => 'web']);
-        $parkManager   = Role::firstOrCreate(['name' => 'park-manager', 'guard_name' => 'web']);
-        $beachManager  = Role::firstOrCreate(['name' => 'beach-manager', 'guard_name' => 'web']);
-        $customer      = Role::firstOrCreate(['name' => 'customer', 'guard_name' => 'web']);
+        $superadmin = Role::firstOrCreate(['name' => 'superadmin', 'guard_name' => 'web']);
+        $hotelManager = Role::firstOrCreate(['name' => 'hotel-manager', 'guard_name' => 'web']);
+        $ferryManager = Role::firstOrCreate(['name' => 'ferry-manager', 'guard_name' => 'web']);
+        $parkManager = Role::firstOrCreate(['name' => 'park-manager', 'guard_name' => 'web']);
+        $beachManager = Role::firstOrCreate(['name' => 'beach-manager', 'guard_name' => 'web']);
+        $customer = Role::firstOrCreate(['name' => 'customer', 'guard_name' => 'web']);
 
         // Superadmin: everything.
         $superadmin->syncPermissions(Permission::all());
@@ -69,7 +69,13 @@ class RolesAndPermissionsSeeder extends Seeder
             // (see /api/park-bookings). Matches hotel-manager's bookings scope.
             'bookings.view', 'bookings.update', 'bookings.cancel',
         ]);
-        $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
+        $beachManager->syncPermissions([
+            'beach.view', 'beach.create', 'beach.update',
+            // Beach-managers need bookings.* to manage beach session bookings
+            // (see /api/beach-bookings). Customers cannot self-cancel beach
+            // bookings, so bookings.cancel effectively routes through here.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
 
         // Customer: self-service booking flow — create, view, and cancel their own bookings.
         $customer->syncPermissions([

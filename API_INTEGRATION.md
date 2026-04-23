@@ -461,7 +461,78 @@ If `date` or `guests` change, the seat-pool, open-on-date, uniqueness, and capac
 
 ---
 
-#### 10. Suggested Next.js Client Layout
+#### 10. Beach Bookings
+
+A beach booking is a session ticket tied to a single `BeachActivitySchedule` (the specific `activity_date + start_time` slot of a `BeachActivity`). One booking covers `guests` people for that slot. The booking date is derived from the schedule — there is no separate `date` column on the booking.
+
+Same reservation-tie rule as park bookings: the caller's `Reservation` must have a confirmed `RoomBooking` covering the schedule's `activity_date`, and `guests` must fit inside `Reservation::seatPoolOn(activity_date)`. Exclusive checkout applies, so a booking on the room's check-out date is rejected.
+
+**Divergence from park bookings — cancellation is staff-only.** Customers cannot cancel their own beach bookings; only `beach-manager` / `superadmin` can. This is enforced in `BeachBookingPolicy::delete` (no owner branch, unlike `ParkBookingPolicy`).
+
+`BeachBookingResource`:
+```json
+{
+  "id": 31,
+  "reservation_id": 7,
+  "beach_activity_schedule_id": 12,
+  "guests": 2,
+  "status": "confirmed",       // confirmed | cancelled
+  "price_per_guest": "75.00",
+  "total_price": "150.00",
+  "cancelled_at": null,
+  "reservation": { /* ReservationResource when eager-loaded */ },
+  "schedule":    { /* BeachActivityScheduleResource when eager-loaded (includes `activity`) */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/beach-bookings` | bearer | `bookings.view` | customer sees only their own; beach-manager + superadmin see all |
+| GET    | `/beach-bookings/{beach_booking}` | bearer | `bookings.view` | owner, beach-manager, or superadmin |
+| POST   | `/beach-bookings` | bearer | `bookings.create` | superadmin, or customer attaching to their own reservation |
+| PUT/PATCH | `/beach-bookings/{beach_booking}` | bearer | `bookings.update` | beach-manager or superadmin (customers cannot PATCH) |
+| DELETE | `/beach-bookings/{beach_booking}` | bearer | `bookings.cancel` | beach-manager or superadmin only (customers cannot cancel) |
+
+Routes are wired **per-verb** (not pipe-OR) — same reasoning as `/park-bookings`.
+
+Index filters (all optional, AND-combined): `?status=confirmed|cancelled`, `?beach_activity_schedule_id=`, `?beach_activity_id=`, `?reservation_id=`, `?date=YYYY-MM-DD`. Pagination is Laravel default (15/page).
+
+Validation `POST`:
+```
+reservation_id              required, exists:reservations
+beach_activity_schedule_id  required, exists:beach_activity_schedules
+guests                      required, integer, min:1
+```
+
+Additional server-side business rules enforced in `BeachBookingController::store`, each returning `422` with a specific validation key on failure:
+
+- **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / beach-manager bypass).
+- **Schedule bookable** (`errors.beach_activity_schedule_id`): schedule `status` is not `cancelled`, and `activity_date` is not in the past.
+- **Seat pool > 0** (`errors.beach_activity_schedule_id`): `Reservation::seatPoolOn(activity_date) > 0` — at least one confirmed room covers the date.
+- **Seat pool cap** (`errors.guests`): `guests <= seatPoolOn(activity_date)`.
+- **Uniqueness** (`errors.beach_activity_schedule_id`): no existing confirmed `BeachBooking` for the same `(reservation_id, beach_activity_schedule_id)`. Cancelled rows don't block — staff can cancel, customer can rebook.
+- **Capacity** (`errors.beach_activity_schedule_id`): `Σ confirmed guests on the schedule + guests <= activity.capacity`.
+
+On create, `price_per_guest = activity.price` and `total_price = activity.price × guests` are derived server-side. Created rows default to `status="confirmed"` (no pending state — if capacity allows and every rule passes, the booking confirms immediately).
+
+Validation `PATCH`:
+```
+status  sometimes, in:confirmed,cancelled
+guests  sometimes, integer, min:1
+```
+If `guests` changes, seat-pool and capacity checks are re-run. `total_price` is recomputed. Setting `status=cancelled` also sets `cancelled_at = now()`. The schedule is not swappable on PATCH — cancel and re-book to change slots.
+
+`DELETE` — soft cancel (staff-only):
+- Sets `status=cancelled` and `cancelled_at=now()`; returns `204` with no body. Row preserved for audit.
+- A customer call returns `403` — only `beach-manager` / `superadmin` pass the policy.
+
+**Cancellation cascade** — same known gap as park bookings: cancelling the underlying `RoomBooking` does not auto-cancel attached beach bookings today.
+
+---
+
+#### 11. Suggested Next.js Client Layout
 
 A minimal sketch — adapt to your routing conventions.
 

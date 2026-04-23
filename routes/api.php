@@ -1,10 +1,11 @@
 <?php
 
 use App\Http\Controllers\Auth\AuthController;
-use App\Http\Controllers\FerryController;
-use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\BeachActivityController;
 use App\Http\Controllers\BeachActivityScheduleController;
+use App\Http\Controllers\BeachBookingController;
+use App\Http\Controllers\FerryController;
+use App\Http\Controllers\FerryScheduleController;
 use App\Http\Controllers\HotelController;
 use App\Http\Controllers\ParkActivityController;
 use App\Http\Controllers\ParkActivityScheduleController;
@@ -14,9 +15,9 @@ use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
 use App\Http\Controllers\ReservationController;
 use App\Http\Controllers\RoomBookingController;
-use App\Http\Controllers\ThemeParkController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
+use App\Http\Controllers\ThemeParkController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -24,7 +25,7 @@ use Illuminate\Support\Facades\Route;
 Route::apiResource('hotels', HotelController::class)->only(['index', 'show']);
 Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
     Route::apiResource('room-types', RoomTypeController::class)->only(['index', 'show']);
-    Route::apiResource('rooms',      RoomController::class)->only(['index', 'show']);
+    Route::apiResource('rooms', RoomController::class)->only(['index', 'show']);
 });
 
 // Public reads — beach activities and schedules are browsable without auth.
@@ -51,11 +52,11 @@ Route::scopeBindings()->prefix('theme-parks/{theme_park}/activities/{park_activi
 
 // Auth entry points.
 Route::post('/auth/register', [AuthController::class, 'register']);
-Route::post('/auth/login',    [AuthController::class, 'login']);
+Route::post('/auth/login', [AuthController::class, 'login']);
 
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
-    Route::get('/auth/me',      [AuthController::class, 'me']);
+    Route::get('/auth/me', [AuthController::class, 'me']);
 
     // Users — UserPolicy gates every verb (superadmin-only + self-access).
     Route::apiResource('users', UserController::class);
@@ -132,36 +133,51 @@ Route::middleware('auth:sanctum')->group(function () {
     });
 
     // Reservations — read-only. Created implicitly via /room-bookings.
-    Route::get('/reservations',               [ReservationController::class, 'index'])
+    Route::get('/reservations', [ReservationController::class, 'index'])
         ->middleware('permission:bookings.view');
     Route::get('/reservations/{reservation}', [ReservationController::class, 'show'])
         ->middleware('permission:bookings.view');
 
     // RoomBookings — per-verb perms (customer lacks bookings.update, so
     // apiResource+pipe-OR would leak PATCH to customers at the middleware layer).
-    Route::get('/room-bookings',                                   [RoomBookingController::class, 'index'])
+    Route::get('/room-bookings', [RoomBookingController::class, 'index'])
         ->middleware('permission:bookings.view');
-    Route::get('/room-bookings/{room_booking}',                    [RoomBookingController::class, 'show'])
+    Route::get('/room-bookings/{room_booking}', [RoomBookingController::class, 'show'])
         ->middleware('permission:bookings.view');
-    Route::post('/room-bookings',                                  [RoomBookingController::class, 'store'])
+    Route::post('/room-bookings', [RoomBookingController::class, 'store'])
         ->middleware('permission:bookings.create');
     Route::match(['put', 'patch'], '/room-bookings/{room_booking}', [RoomBookingController::class, 'update'])
         ->middleware('permission:bookings.update');
-    Route::delete('/room-bookings/{room_booking}',                 [RoomBookingController::class, 'destroy'])
+    Route::delete('/room-bookings/{room_booking}', [RoomBookingController::class, 'destroy'])
         ->middleware('permission:bookings.cancel');
 
     // ParkBookings — day-pass tied to a confirmed room booking. Same
     // per-verb split as /room-bookings so customers (who lack bookings.update)
     // can POST + DELETE but not PATCH.
-    Route::get('/park-bookings',                                   [ParkBookingController::class, 'index'])
+    Route::get('/park-bookings', [ParkBookingController::class, 'index'])
         ->middleware('permission:bookings.view');
-    Route::get('/park-bookings/{park_booking}',                    [ParkBookingController::class, 'show'])
+    Route::get('/park-bookings/{park_booking}', [ParkBookingController::class, 'show'])
         ->middleware('permission:bookings.view');
-    Route::post('/park-bookings',                                  [ParkBookingController::class, 'store'])
+    Route::post('/park-bookings', [ParkBookingController::class, 'store'])
         ->middleware('permission:bookings.create');
     Route::match(['put', 'patch'], '/park-bookings/{park_booking}', [ParkBookingController::class, 'update'])
         ->middleware('permission:bookings.update');
-    Route::delete('/park-bookings/{park_booking}',                 [ParkBookingController::class, 'destroy'])
+    Route::delete('/park-bookings/{park_booking}', [ParkBookingController::class, 'destroy'])
+        ->middleware('permission:bookings.cancel');
+
+    // BeachBookings — session ticket tied to a BeachActivitySchedule. Same
+    // per-verb permission split as /park-bookings; cancellation is staff-only
+    // (BeachBookingPolicy::delete requires beach-manager) so customers can
+    // POST but not DELETE.
+    Route::get('/beach-bookings', [BeachBookingController::class, 'index'])
+        ->middleware('permission:bookings.view');
+    Route::get('/beach-bookings/{beach_booking}', [BeachBookingController::class, 'show'])
+        ->middleware('permission:bookings.view');
+    Route::post('/beach-bookings', [BeachBookingController::class, 'store'])
+        ->middleware('permission:bookings.create');
+    Route::match(['put', 'patch'], '/beach-bookings/{beach_booking}', [BeachBookingController::class, 'update'])
+        ->middleware('permission:bookings.update');
+    Route::delete('/beach-bookings/{beach_booking}', [BeachBookingController::class, 'destroy'])
         ->middleware('permission:bookings.cancel');
 });
 
