@@ -322,9 +322,9 @@ The vessel itself only carries `name` and the FK. Price and capacity live on the
 Validation `POST`:
 ```
 ferry_type_id  required, exists:ferry_types
-name           string max:255 required
+name           string max:255 required, unique per (ferry_type_id, name)
 ```
-`PATCH`: both fields `sometimes`. Vessel `name` is unique per `ferry_type_id` (DB-level constraint).
+`PATCH`: both fields `sometimes`; the composite-unique check still applies, ignoring the current ferry's id. If `ferry_type_id` is omitted on PATCH, the check uses the row's existing type. Duplicate `(ferry_type_id, name)` returns `422` with `errors.name` — the DB has a matching unique index as a backstop, but clients will only ever see the 422.
 
 ##### Ferry Schedules
 
@@ -719,6 +719,13 @@ status  sometimes, in:confirmed,cancelled
 guests  sometimes, integer, min:1
 ```
 If `guests` changes, seat-pool and capacity checks are re-run; `total_price` is recomputed. Schedule swap is not supported on PATCH.
+
+**Status transitions.** Only `confirmed → cancelled` (and no-ops) are accepted. **`cancelled → confirmed` is rejected with `422` on `status`** — re-confirming a cancelled row would need the full create-time invariant chain (schedule bookability, per-reservation-per-schedule uniqueness, seat pool, ferry capacity) to be re-run against the current world, and a customer asking to "undo" a cancellation should create a new booking instead. Client UX: on a cancelled row, hide/disable any "re-activate" affordance; surface a "book again" action that posts a fresh `POST /ferry-bookings`.
+
+| From ↓ / To → | `confirmed` | `cancelled` |
+|---|---|---|
+| `confirmed` | no-op (200) | cancel (200, sets `cancelled_at`) |
+| `cancelled` | **422 on `status`** | no-op (200) |
 
 `DELETE` — soft cancel (staff-only): sets `status=cancelled`, `cancelled_at=now()`, returns `204`. Customer call → `403`.
 
