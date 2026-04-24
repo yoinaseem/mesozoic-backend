@@ -182,3 +182,85 @@ test('range beyond 366 days fails validation', function () {
 test('unknown hotel returns 404', function () {
     getJson('/api/hotels/99999/availability')->assertNotFound();
 });
+
+test('response includes a per-room array for each room type', function () {
+    [$hotel, $type] = availabilityHotel(roomCount: 3);
+    $rooms = $hotel->rooms()->where('room_type_id', $type->id)->orderBy('id')->get();
+
+    $response = getJson("/api/hotels/{$hotel->id}/availability?from=2026-05-01&to=2026-05-02")
+        ->assertOk();
+
+    expect($response->json('data.room_types.0.rooms'))->toHaveCount(3);
+    $response
+        ->assertJsonPath('data.room_types.0.rooms.0.room_id', $rooms[0]->id)
+        ->assertJsonPath('data.room_types.0.rooms.0.room_no', $rooms[0]->room_no)
+        ->assertJsonPath('data.room_types.0.rooms.0.free', true)
+        ->assertJsonPath('data.room_types.0.rooms.1.free', true)
+        ->assertJsonPath('data.room_types.0.rooms.2.free', true);
+});
+
+test('a specifically-assigned booking marks that room as not free', function () {
+    [$hotel, $type] = availabilityHotel(roomCount: 2);
+    $taken = $hotel->rooms()->where('room_type_id', $type->id)->orderBy('id')->first();
+
+    // Create a booking with an explicit room_id (mimicking post-auto-assign state).
+    $u = User::factory()->create();
+    $u->assignRole('customer');
+    $r = Reservation::create(['user_id' => $u->id]);
+    RoomBooking::create([
+        'reservation_id'  => $r->id,
+        'hotel_id'        => $type->hotel_id,
+        'room_type_id'    => $type->id,
+        'room_id'         => $taken->id,
+        'status'          => 'confirmed',
+        'check_in_date'   => '2026-05-02',
+        'check_out_date'  => '2026-05-04',
+        'guests'          => 1,
+        'price_per_night' => $type->price,
+        'nights'          => 2,
+        'total_price'     => $type->price * 2,
+    ]);
+
+    $response = getJson("/api/hotels/{$hotel->id}/availability?from=2026-05-01&to=2026-05-03")
+        ->assertOk();
+
+    $rooms = collect($response->json('data.room_types.0.rooms'))->keyBy('room_id');
+    expect($rooms[$taken->id]['free'])->toBeFalse();
+    expect($rooms->except($taken->id)->pluck('free')->all())->each->toBeTrue();
+});
+
+test('cancelled booking does not mark its room as taken', function () {
+    [$hotel, $type] = availabilityHotel(roomCount: 1);
+    $room = $hotel->rooms()->first();
+
+    $u = User::factory()->create();
+    $u->assignRole('customer');
+    $r = Reservation::create(['user_id' => $u->id]);
+    RoomBooking::create([
+        'reservation_id'  => $r->id,
+        'hotel_id'        => $type->hotel_id,
+        'room_type_id'    => $type->id,
+        'room_id'         => $room->id,
+        'status'          => 'cancelled',
+        'check_in_date'   => '2026-05-02',
+        'check_out_date'  => '2026-05-04',
+        'guests'          => 1,
+        'price_per_night' => $type->price,
+        'nights'          => 2,
+        'total_price'     => $type->price * 2,
+    ]);
+
+    getJson("/api/hotels/{$hotel->id}/availability?from=2026-05-01&to=2026-05-03")
+        ->assertOk()
+        ->assertJsonPath('data.room_types.0.rooms.0.free', true);
+});
+
+test('room type with zero rooms returns an empty rooms array', function () {
+    $hotel = Hotel::factory()->create();
+    $hotel->roomTypes()->create(['name' => 'Empty', 'capacity' => 2, 'price' => 100]);
+
+    $response = getJson("/api/hotels/{$hotel->id}/availability?from=2026-05-01&to=2026-05-02")
+        ->assertOk();
+
+    expect($response->json('data.room_types.0.rooms'))->toBe([]);
+});

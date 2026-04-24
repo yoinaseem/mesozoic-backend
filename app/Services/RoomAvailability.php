@@ -86,7 +86,15 @@ class RoomAvailability
     }
 
     /**
-     * Per-room-type breakdown for a hotel plus aggregated totals.
+     * Per-room-type breakdown for a hotel plus aggregated totals. Each
+     * room-type entry carries a `rooms` array with a {room_id, room_no, free}
+     * row per physical room, so UIs can paint per-room status without a
+     * second round-trip.
+     *
+     * Note: aggregate `booked` counts all overlapping confirmed bookings
+     * (including legacy rows with null room_id). Per-room `free` flags only
+     * reflect specific-room conflicts. In a clean DB (all bookings created
+     * post-auto-assign) the two are always consistent.
      */
     public function forHotel(Hotel $hotel, string $from, string $to): array
     {
@@ -94,6 +102,25 @@ class RoomAvailability
 
         $breakdown = $roomTypes->map(function (RoomType $rt) use ($from, $to) {
             $counts = $this->forRoomType($rt->id, $from, $to);
+
+            $takenRoomIds = RoomBooking::query()
+                ->where('room_type_id', $rt->id)
+                ->where('status', 'confirmed')
+                ->whereNotNull('room_id')
+                ->whereDate('check_in_date', '<', $to)
+                ->whereDate('check_out_date', '>', $from)
+                ->pluck('room_id')
+                ->all();
+
+            $rooms = Room::where('room_type_id', $rt->id)
+                ->orderBy('id')
+                ->get()
+                ->map(fn (Room $r) => [
+                    'room_id' => $r->id,
+                    'room_no' => $r->room_no,
+                    'free'    => ! in_array($r->id, $takenRoomIds, true),
+                ])
+                ->all();
 
             return [
                 'room_type_id' => $rt->id,
@@ -103,6 +130,7 @@ class RoomAvailability
                 'total'        => $counts['total'],
                 'booked'       => $counts['booked'],
                 'free'         => $counts['free'],
+                'rooms'        => $rooms,
             ];
         })->all();
 
