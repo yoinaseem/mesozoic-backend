@@ -430,13 +430,350 @@ status        optional, in:pending,confirmed,cancelled  (default: pending)
 
 ---
 
-#### 9. Park Bookings
+#### 9. Theme Parks, Opening Hours, Overrides, Activities & Activity Schedules
+
+A `ThemePark` is an on-island venue with a weekday-baseline schedule (`ParkOpeningHour`), per-date exceptions (`ParkHourOverride`), and a catalogue of activities (`ParkActivity`) that run on scheduled sessions (`ParkActivitySchedule`). All park-side reads are **public**; mutations are gated by `park.create | park.update | park.delete` — held by `park-manager` and `superadmin`. Park bookings (§12) and park activity bookings (§14) walk this chain for open-day checks and coupling rules.
+
+The database currently holds a single park, but the controllers and uniqueness rules are already multi-park-ready — adding a second park is additive.
+
+##### Theme Parks (flat resource)
+
+`ThemeParkResource`:
+```json
+{
+  "id": 1,
+  "name": "Mesozoic Theme Park",
+  "images": ["https://.../cover.jpg"],
+  "description": "...",
+  "capacity": 5000,
+  "price": 50.0,
+  "contact_email": "contact@mesozoic.test",
+  "contact_phone": "+960-000-0000",
+  "opening_hours": [ /* ParkOpeningHourResource[] — only on `show` */ ],
+  "activities":    [ /* ParkActivityResource[] — only on `show`; each carries `schedules_count` */ ],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/theme-parks` | public | — | — |
+| GET    | `/theme-parks/{theme_park}` | public | — | includes `opening_hours` + `activities` |
+| POST   | `/theme-parks` | bearer | `park.create` | park-manager / superadmin |
+| PUT/PATCH | `/theme-parks/{theme_park}` | bearer | `park.update` | park-manager / superadmin |
+| DELETE | `/theme-parks/{theme_park}` | bearer | `park.delete` | superadmin only (`ThemeParkPolicy::delete` returns false — only `before()` lets it through) |
+
+Validation `POST`:
+```
+name          required, string max:255
+images        nullable, array; each item string max:2048
+description   required, string
+capacity      required, integer min:1
+price         required, numeric min:0
+contact_email required, email max:255
+contact_phone required, string max:50
+```
+`PATCH`: every field `sometimes`.
+
+##### Opening Hours (weekday baseline — nested)
+
+`ParkOpeningHour` is the default schedule for a weekday. One row per `(park_id, day)`; `day ∈ {monday, tuesday, wednesday, thursday, friday, saturday, sunday}`. Both times required.
+
+```json
+{
+  "id": 5,
+  "park_id": 1,
+  "day": "monday",
+  "open_time": "09:00:00",
+  "close_time": "18:00:00",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission |
+|---|---|---|---|
+| GET    | `/theme-parks/{theme_park}/opening-hours` | public, paginated | — |
+| GET    | `/theme-parks/{theme_park}/opening-hours/{opening_hour}` | public | — |
+| POST   | `/theme-parks/{theme_park}/opening-hours` | bearer | `park.create` |
+| PUT/PATCH | `.../opening-hours/{opening_hour}` | bearer | `park.update` |
+| DELETE | `.../opening-hours/{opening_hour}` | bearer | `park.delete` |
+
+Validation `POST`:
+```
+day         required, in:monday,…,sunday, unique per park_id
+open_time   required, H:i:s
+close_time  required, H:i:s, different:open_time
+```
+`PATCH`: every field `sometimes`; unique check ignores the current row. Controller also re-validates `open_time != close_time` on effective values.
+
+##### Hour Overrides (per-date exceptions — nested)
+
+`ParkHourOverride` wins over the weekday baseline for one specific `date`. Setting both times to `null` means **"closed that day"** (e.g. sudden holiday). One row per `(park_id, date)`.
+
+```json
+{
+  "id": 11,
+  "park_id": 1,
+  "date": "2026-12-25",
+  "open_time": null,
+  "close_time": null,
+  "is_closed": true,            // convenience flag — true when both times are null
+  "note": "Closed for holiday",
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission |
+|---|---|---|---|
+| GET    | `/theme-parks/{theme_park}/hour-overrides` | public, paginated, ordered by `date` | — |
+| GET    | `.../hour-overrides/{hour_override}` | public | — |
+| POST   | `.../hour-overrides` | bearer | `park.create` |
+| PUT/PATCH | `.../hour-overrides/{hour_override}` | bearer | `park.update` |
+| DELETE | `.../hour-overrides/{hour_override}` | bearer | `park.delete` |
+
+Validation `POST`:
+```
+date        required, date, unique per park_id
+open_time   nullable, required_with:close_time, H:i:s
+close_time  nullable, required_with:open_time, H:i:s, different:open_time
+note        nullable, string max:255
+```
+Both times set → "open with explicit hours". Both `null` → "closed that day". Partial (one set, one null) → `422`. `PATCH`: every field `sometimes`; the both-or-neither check runs on effective values.
+
+##### Effective Hours (computed endpoint)
+
+`GET /theme-parks/{theme_park}/effective-hours` resolves the actual schedule for a date or a range using **override > baseline > `not_configured`** precedence. This is the endpoint (and the `ThemePark::effectiveHoursOn` model method behind it) park bookings use for `isOpenOn(date)`.
+
+Query params (exactly one form required):
+- `?date=YYYY-MM-DD` — single day
+- `?from=YYYY-MM-DD&to=YYYY-MM-DD` — inclusive range, max 366 days
+
+Response — `data` is always an array (one entry per day):
+```json
+{
+  "data": [
+    {
+      "date": "2026-04-25",
+      "status": "open",           // open | closed | not_configured
+      "source": "baseline",        // baseline | override | null
+      "open_time": "09:00:00",
+      "close_time": "18:00:00",
+      "note": null
+    }
+  ]
+}
+```
+`status: "not_configured"` means neither an override nor a weekday baseline exists — callers should treat this as "closed" for booking purposes. Validation returns `422` if neither form is supplied, if `from` is passed without `to` (or vice versa), if `to < from`, or if the range exceeds 366 days.
+
+##### Park Activities (nested)
+
+`ParkActivity` is a catalogue entry under one park. Each activity is either **all-day** (`is_all_day = true`, `duration = null`) or **timed** (`is_all_day = false`, `duration` in minutes required). `max_capacity` caps concurrent guests per session. Sessions themselves are `ParkActivitySchedule` rows.
+
+```json
+{
+  "id": 3,
+  "park_id": 1,
+  "name": "Jurassic River Rafting",
+  "description": "...",
+  "price": 35.0,
+  "image": null,
+  "duration": 45,               // minutes, or null when is_all_day=true
+  "max_capacity": 20,
+  "is_all_day": false,
+  "schedules":       [ /* ParkActivityScheduleResource[] — only on `show` */ ],
+  "schedules_count": 12,         // only on `show`
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission |
+|---|---|---|---|
+| GET    | `/theme-parks/{theme_park}/activities` | public, paginated | — |
+| GET    | `/theme-parks/{theme_park}/activities/{park_activity}` | public | includes `schedules` + `schedules_count` |
+| POST   | `.../activities` | bearer | `park.create` |
+| PUT/PATCH | `.../activities/{park_activity}` | bearer | `park.update` |
+| DELETE | `.../activities/{park_activity}` | bearer | `park.delete` |
+
+Validation `POST`:
+```
+name         required, string max:255
+description  nullable, string
+price        required, numeric min:0
+image        nullable, string max:255
+duration     required unless is_all_day=true, integer min:1  (forced to null when is_all_day=true)
+max_capacity required, integer min:1
+is_all_day   optional, boolean (default false)
+```
+`PATCH`: every field `sometimes`. Controller re-checks on effective values: if `is_all_day` ends up `false` and `duration` ends up `null`, returns `422` on `duration`.
+
+##### Park Activity Schedules (double-nested)
+
+`ParkActivitySchedule` pins a `ParkActivity` to `date + start_time`. `status ∈ {scheduled, cancelled, completed}` (default `scheduled`). `end_time` is either explicit (stored) or **derived** at serialization as `start_time + activity.duration` when the parent activity carries a duration. The resource exposes both the resolved time and an `end_time_source ∈ {explicit, derived, null}` so clients know whether the value came from the row or from the activity's duration.
+
+```json
+{
+  "id": 9,
+  "park_activity_id": 3,
+  "date": "2026-05-01",
+  "start_time": "10:00:00",
+  "end_time": "10:45:00",
+  "end_time_source": "derived",   // explicit | derived | null
+  "status": "scheduled",
+  "notes": null,
+  "activity": { /* ParkActivityResource when eager-loaded */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission |
+|---|---|---|---|
+| GET    | `/theme-parks/{theme_park}/activities/{park_activity}/schedules` | public, paginated | — |
+| GET    | `.../schedules/{schedule}` | public | — |
+| POST   | `.../schedules` | bearer | `park.create\|park.update\|park.delete` |
+| PUT/PATCH | `.../schedules/{schedule}` | bearer | (any) |
+| DELETE | `.../schedules/{schedule}` | bearer | (any) |
+
+Route named `park-activity-schedules`. Pipe-OR middleware is safe here because per-verb enforcement lives in `ParkActivitySchedulePolicy`.
+
+Validation `POST`:
+```
+date        required, date
+start_time  required, H:i:s, unique per (park_activity_id, date)
+end_time    nullable, H:i:s, different:start_time
+status      optional, in:scheduled,cancelled,completed
+notes       nullable, string
+```
+`PATCH`: every field `sometimes`; the duplicate-slot check (closure + `exists()`) ignores the current row and falls back to `schedule.date` when `date` is omitted. `start_time != end_time` is re-checked on effective values.
+
+---
+
+#### 10. Reservations
+
+A `Reservation` is the trip envelope that groups a user's bookings together: one or more `RoomBooking`s (§11) plus tickets from the four ticket modules (`ParkBooking`, `BeachBooking`, `ParkActivityBooking`, `FerryBooking` — §12–15). Reservations are **created implicitly** — there is no `POST /reservations`. They come into being as a side-effect of `POST /room-bookings` when the caller omits `reservation_id`; subsequent ticket bookings attach to the reservation by passing its id.
+
+A reservation has no dates, status, or totals of its own — those are derived from attached bookings. The one piece of business logic it exposes is the seat-pool helper that ticket modules call to size how many tickets the reservation can hold on a given date:
+
+- **`Reservation::seatPoolOn($date)`** — sum of confirmed room-booking `guests` with **exclusive-checkout** window (`check_in_date <= $date < check_out_date`). Used by park, beach, and park-activity bookings. Checkout day is always rejected (pool = 0) because guests are leaving.
+- **`Reservation::ferrySeatPoolOn($date)`** — same, but **inclusive** on both ends (`check_in_date <= $date <= check_out_date`). Used only by ferry bookings (§15) because arrival-day and departure-day ferries are primary use cases.
+
+Both helpers ignore `cancelled` room bookings, so a cancellation zeroes out the seat pool for those dates.
+
+`ReservationResource`:
+```json
+{
+  "id": 42,
+  "user_id": 17,
+  "user":          { /* UserResource when eager-loaded */ },
+  "room_bookings": [ /* RoomBookingResource[] when eager-loaded */ ],
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+Ticket bookings (park / beach / activity / ferry) are **not** embedded on the reservation payload; fetch them from their respective index endpoints with `?reservation_id=…`.
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET | `/reservations` | bearer | `bookings.view` | customer: own only; hotel-manager: reservations whose room-bookings touch a managed hotel; superadmin: all |
+| GET | `/reservations/{reservation}` | bearer | `bookings.view` | same scope as index (hotel-manager access is via `managedHotels` ↔ `roomBookings.hotel_id`) |
+
+No `POST / PATCH / DELETE` — reservations are not directly mutable. Attach new rooms via `POST /room-bookings`; manage status on the underlying booking rows.
+
+Index: paginated (10/page, `created_at DESC`). Eager-loads `user`, `roomBookings.hotel`, `roomBookings.roomType`, `roomBookings.room`.
+
+---
+
+#### 11. Room Bookings
+
+A `RoomBooking` is one reserved room in a hotel for a `[check_in_date, check_out_date)` window. It belongs to a `Reservation` (auto-created if absent) and owns a specific `room_id` picked at store time. `status ∈ {confirmed, cancelled}` (no `pending` — rows are confirmed on create).
+
+**Reservation resolution.** `POST /room-bookings` accepts an optional `reservation_id`:
+- **Omitted** → a fresh `Reservation` is created for the caller and attached.
+- **Supplied** → the reservation must belong to the caller, or the caller must be `superadmin` (who can attach to any reservation). Failure returns `422` on `reservation_id` with `"This reservation does not belong to you."`
+
+**Room allocation.** Clients do **not** send `room_id` on create — pick happens server-side. The controller chooses the lowest-numbered room of the requested `room_type_id` not already booked on overlapping confirmed dates. If the room-type has zero aggregate capacity left for the window, the request fails with `422` on `room_type_id`: `"No rooms of this type are available for the selected dates."` There is a fallback: if no per-room conflicts exist but aggregate capacity is still sufficient, the first room of the type is assigned.
+
+**Availability check.** Delegated to `RoomAvailability::forRoomType`, the same service that backs `GET /hotels/{hotel}/availability` — the endpoints stay in lockstep. Known limitation: count-then-insert; a concurrent create could slip through the window. Acceptable for current scope.
+
+**Pricing.** `price_per_night = roomType.price`, `nights = check_out_date − check_in_date` (exclusive), `total_price = bcmul(price_per_night, nights, 2)`.
+
+**Update semantics.** `PATCH` supports `status`, `check_in_date`, `check_out_date`, `guests`, and `room_id` (explicit manager override). Date changes trigger a fresh availability check (ignoring this booking's id), recompute `nights + total_price`, and auto-reassign a room if the current one is no longer free on the new dates. An explicit `room_id` must refer to a room in the same hotel **and** the same room type; a busy room returns `422` on `room_id` with `"This room is already booked for the selected dates."` A `guests` value above `roomType.capacity` returns `422` on `guests`.
+
+**Cancellation.** `DELETE` is a soft cancel: `status = cancelled`, `cancelled_at = now()`, returns `204`. The owner may cancel **only before `check_in_date`**; on or after check-in, cancel is hotel-manager / superadmin only (`RoomBookingPolicy::delete`).
+
+**Seat-pool invariant.** Both `PATCH` and `DELETE` call `enforceSeatPoolInvariantOrFail($reservation)`. It is currently a **deliberate no-op** — kept in place so the ticket-booking cancellation cascade has a hook when it ships. Today, cancelling a room booking does not auto-cancel attached park/beach/activity/ferry tickets; that's a documented gap (see `CLAUDE.md`).
+
+`RoomBookingResource`:
+```json
+{
+  "id": 88,
+  "reservation_id": 42,
+  "hotel_id": 1,
+  "room_type_id": 3,
+  "room_id": 104,
+  "status": "confirmed",          // confirmed | cancelled
+  "check_in_date": "2026-05-01",
+  "check_out_date": "2026-05-04",
+  "guests": 2,
+  "price_per_night": "150.00",
+  "nights": 3,
+  "total_price": "450.00",
+  "cancelled_at": null,
+  "reservation": { /* when eager-loaded */ },
+  "hotel":       { /* when eager-loaded */ },
+  "room_type":   { /* when eager-loaded */ },
+  "room":        { /* when eager-loaded */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
+
+| Method | Path | Auth | Permission | Policy |
+|---|---|---|---|---|
+| GET    | `/room-bookings` | bearer | `bookings.view` | customer: own reservation only; hotel-manager: bookings in a managed hotel; superadmin: all |
+| GET    | `/room-bookings/{room_booking}` | bearer | `bookings.view` | owner, hotel-manager of that hotel, or superadmin |
+| POST   | `/room-bookings` | bearer | `bookings.create` | any holder (ownership enforced on `reservation_id` when supplied) |
+| PUT/PATCH | `/room-bookings/{room_booking}` | bearer | `bookings.update` | hotel-manager of the booking's hotel, or superadmin — **customer cannot PATCH** |
+| DELETE | `/room-bookings/{room_booking}` | bearer | `bookings.cancel` | owner before check-in; hotel-manager of the booking's hotel; superadmin |
+
+Routes are split **per-verb** (not `apiResource` + pipe-OR) because `customer` holds `bookings.view | create | cancel` but not `bookings.update`; a pipe-OR declaration would let PATCH through the middleware and only get rejected at the policy layer.
+
+Index filters (AND-combined): `?status=confirmed|cancelled`, `?hotel_id=`, `?reservation_id=`. Pagination 10/page, ordered `check_in_date DESC`.
+
+Validation `POST`:
+```
+reservation_id  optional, nullable, exists:reservations  (omit = auto-create for caller)
+room_type_id    required, exists:room_types
+check_in_date   required, date, after_or_equal:today
+check_out_date  required, date, after:check_in_date
+guests          required, integer, min:1
+```
+
+Validation `PATCH` (every field `sometimes`):
+```
+status          in:confirmed,cancelled
+check_in_date   date
+check_out_date  date, after:check_in_date
+guests          integer, min:1
+room_id         nullable, must exist in same (hotel_id, room_type_id) as the booking
+```
+
+Swapping `hotel_id` or `room_type_id` on `PATCH` is not supported — treat those as immutable. To move the guest to a different hotel or type, cancel and rebook.
+
+---
+
+#### 12. Park Bookings
 
 A park booking is a day-pass admission ticket tied to a `Reservation` (the trip envelope containing one or more room bookings). One booking covers `guests` people admitted to `park` on `date`.
 
 The guest count is validated against `Reservation::seatPoolOn(date)` — the sum of confirmed room-booking guests active on that date with **exclusive checkout** (`check_in_date <= date < check_out_date`). This lets a single booking cover a group spread across multiple rooms (e.g. a family of 6 across 3 rooms buys one 6-guest day pass). It also means the check-out date always has a seat pool of 0 and is rejected.
 
-Prerequisite: the caller's reservation must already have at least one confirmed `RoomBooking` covering `date`. The `Reservation`, `RoomBooking`, and `ThemePark` modules are not yet documented in this file — consult the Laravel controllers until a follow-up PR adds them.
+Prerequisite: the caller's reservation must already have at least one confirmed `RoomBooking` (§11) covering `date`, and `park.isOpenOn(date) === true` (§9 effective hours).
 
 `ParkBookingResource`:
 ```json
@@ -506,7 +843,7 @@ If `date` or `guests` change, the seat-pool, open-on-date, uniqueness, and capac
 
 ---
 
-#### 10. Beach Bookings
+#### 13. Beach Bookings
 
 A beach booking is a session ticket tied to a single `BeachActivitySchedule` (the specific `activity_date + start_time` slot of a `BeachActivity`). One booking covers `guests` people for that slot. The booking date is derived from the schedule — there is no separate `date` column on the booking.
 
@@ -577,7 +914,7 @@ If `guests` changes, seat-pool and capacity checks are re-run. `total_price` is 
 
 ---
 
-#### 11. Park Activity Bookings
+#### 14. Park Activity Bookings
 
 A park activity booking is a session ticket tied to a single `ParkActivitySchedule` (which pins a `ParkActivity` to a date + start_time within a `ThemePark`). One booking covers `guests` people for that session. Booking date is derived from `schedule.date` — no separate `date` column.
 
@@ -651,7 +988,7 @@ If `guests` changes, seat-pool, day-pass, and capacity checks are re-run; `total
 
 ---
 
-#### 12. Ferry Bookings
+#### 15. Ferry Bookings
 
 A ferry booking is a trip ticket tied to a specific `FerrySchedule` (which pins a `Ferry` to `travel_date + departure_time` and carries `arrival_date/time + departure_port + arrival_port`). One booking covers `guests` people on that departure.
 
@@ -733,7 +1070,7 @@ If `guests` changes, seat-pool and capacity checks are re-run; `total_price` is 
 
 ---
 
-#### 13. Suggested Next.js Client Layout
+#### 16. Suggested Next.js Client Layout
 
 A minimal sketch — adapt to your routing conventions.
 
@@ -781,7 +1118,7 @@ if (res.status === 422) {
 
 ---
 
-#### 14. Quick Reference: Endpoint Index
+#### 17. Quick Reference: Endpoint Index
 
 ```
 PUBLIC
@@ -791,10 +1128,22 @@ GET    /api/hotels/{hotel}/room-types
 GET    /api/hotels/{hotel}/room-types/{room_type}
 GET    /api/hotels/{hotel}/rooms
 GET    /api/hotels/{hotel}/rooms/{room}
+GET    /api/hotels/{hotel}/availability                       [?from=&to= ; max 366-day range]
 GET    /api/beach-activities
 GET    /api/beach-activities/{beach_activity}
 GET    /api/beach-activities/{beach_activity}/schedules
 GET    /api/beach-activities/{beach_activity}/schedules/{schedule}
+GET    /api/theme-parks
+GET    /api/theme-parks/{theme_park}
+GET    /api/theme-parks/{theme_park}/opening-hours
+GET    /api/theme-parks/{theme_park}/opening-hours/{opening_hour}
+GET    /api/theme-parks/{theme_park}/hour-overrides
+GET    /api/theme-parks/{theme_park}/hour-overrides/{hour_override}
+GET    /api/theme-parks/{theme_park}/effective-hours          [?date= | ?from=&to= ; max 366-day range]
+GET    /api/theme-parks/{theme_park}/activities
+GET    /api/theme-parks/{theme_park}/activities/{park_activity}
+GET    /api/theme-parks/{theme_park}/activities/{park_activity}/schedules
+GET    /api/theme-parks/{theme_park}/activities/{park_activity}/schedules/{schedule}
 GET    /api/ferry-types
 GET    /api/ferry-types/{ferry_type}
 GET    /api/ferries
@@ -835,6 +1184,26 @@ POST   /api/beach-activities/{beach_activity}/schedules       [beach.create]
 PUT    /api/beach-activities/{beach_activity}/schedules/{schedule}  [beach.update]
 DELETE /api/beach-activities/{beach_activity}/schedules/{schedule}  [superadmin]
 
+POST   /api/theme-parks                                       [park.create → park-manager or superadmin]
+PUT    /api/theme-parks/{theme_park}                          [park.update → park-manager or superadmin]
+DELETE /api/theme-parks/{theme_park}                          [park.delete → superadmin]
+
+POST   /api/theme-parks/{theme_park}/opening-hours            [park.create]
+PUT    /api/theme-parks/{theme_park}/opening-hours/{opening_hour}  [park.update]
+DELETE /api/theme-parks/{theme_park}/opening-hours/{opening_hour}  [park.delete]
+
+POST   /api/theme-parks/{theme_park}/hour-overrides           [park.create]
+PUT    /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.update]
+DELETE /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.delete]
+
+POST   /api/theme-parks/{theme_park}/activities               [park.create]
+PUT    /api/theme-parks/{theme_park}/activities/{park_activity}  [park.update]
+DELETE /api/theme-parks/{theme_park}/activities/{park_activity}  [park.delete]
+
+POST   /api/theme-parks/{theme_park}/activities/{park_activity}/schedules       [park.create|park.update|park.delete]
+PUT    /api/theme-parks/{theme_park}/activities/{park_activity}/schedules/{schedule}  [park.create|park.update|park.delete]
+DELETE /api/theme-parks/{theme_park}/activities/{park_activity}/schedules/{schedule}  [park.create|park.update|park.delete]
+
 POST   /api/ferry-types                                       [ferry.create → ferry-manager or superadmin]
 PUT    /api/ferry-types/{ferry_type}                          [ferry.update → ferry-manager or superadmin]
 DELETE /api/ferry-types/{ferry_type}                          [superadmin]
@@ -846,6 +1215,15 @@ DELETE /api/ferries/{ferry}                                   [superadmin]
 POST   /api/ferry-schedules                                   [ferry.create → ferry-manager or superadmin]
 PUT    /api/ferry-schedules/{ferry_schedule}                  [ferry.update → ferry-manager or superadmin]
 DELETE /api/ferry-schedules/{ferry_schedule}                  [ferry.delete → superadmin]
+
+GET    /api/reservations                                      [bookings.view — customer: own; hotel-manager: reservations in managed hotels; superadmin: all]
+GET    /api/reservations/{reservation}                        [bookings.view — same scope]
+
+GET    /api/room-bookings                                     [bookings.view — customer: own; hotel-manager: managed hotels; superadmin: all]
+GET    /api/room-bookings/{room_booking}                      [bookings.view]
+POST   /api/room-bookings                                     [bookings.create — auto-creates reservation if reservation_id omitted]
+PUT    /api/room-bookings/{room_booking}                      [bookings.update — hotel-manager of that hotel or superadmin; customer cannot PATCH]
+DELETE /api/room-bookings/{room_booking}                      [bookings.cancel — owner before check-in, hotel-manager, or superadmin]
 
 GET    /api/park-bookings                                     [bookings.view — customer: own only; park-manager/superadmin: all]
 GET    /api/park-bookings/{park_booking}                      [bookings.view]
