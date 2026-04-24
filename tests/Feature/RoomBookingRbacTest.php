@@ -392,6 +392,130 @@ test('superadmin sees every booking', function () {
         ->assertJsonCount(2, 'data');
 });
 
+test('booking creation auto-assigns a specific room of the requested type', function () {
+    [$hotel, $type] = hotelWithType(roomCount: 2);
+    $customer = customerUser();
+
+    $response = $this->actingAs($customer)->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(3)->toDateString(),
+        'check_out_date' => now()->addDays(5)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    $assignedRoomId = $response->json('data.room_id');
+    $hotelRoomIds   = $hotel->rooms()->pluck('id')->all();
+
+    expect($assignedRoomId)->not->toBeNull();
+    expect($hotelRoomIds)->toContain($assignedRoomId);
+});
+
+test('two overlapping bookings pick different rooms', function () {
+    [, $type] = hotelWithType(roomCount: 2);
+
+    $a = $this->actingAs(customerUser())->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(3)->toDateString(),
+        'check_out_date' => now()->addDays(5)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    $b = $this->actingAs(customerUser())->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(3)->toDateString(),
+        'check_out_date' => now()->addDays(5)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    expect($a->json('data.room_id'))->not->toBe($b->json('data.room_id'));
+});
+
+test('explicit room reassignment to an already-occupied room fails', function () {
+    [$hotel, $type] = hotelWithType(roomCount: 2);
+    $customer = customerUser();
+    $manager  = managerOf($hotel);
+    $dates    = [now()->addDays(3)->toDateString(), now()->addDays(5)->toDateString()];
+
+    $first = $this->actingAs($customer)->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => $dates[0],
+        'check_out_date' => $dates[1],
+        'guests'         => 2,
+    ])->assertCreated();
+
+    $second = $this->actingAs($customer)->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => $dates[0],
+        'check_out_date' => $dates[1],
+        'guests'         => 2,
+    ])->assertCreated();
+
+    // Try to steal the first booking's room for the second booking.
+    $this->actingAs($manager)
+        ->patchJson("/api/room-bookings/{$second->json('data.id')}", [
+            'room_id' => $first->json('data.room_id'),
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['room_id']);
+});
+
+test('date-change keeps the current room when still free on new dates', function () {
+    [, $type] = hotelWithType(roomCount: 2);
+    $customer = customerUser();
+    $manager  = managerOf($type->hotel);
+
+    $booking = $this->actingAs($customer)->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(3)->toDateString(),
+        'check_out_date' => now()->addDays(5)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    $originalRoomId = $booking->json('data.room_id');
+
+    $this->actingAs($manager)
+        ->patchJson("/api/room-bookings/{$booking->json('data.id')}", [
+            'check_in_date'  => now()->addDays(10)->toDateString(),
+            'check_out_date' => now()->addDays(12)->toDateString(),
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.room_id', $originalRoomId);
+});
+
+test('date-change auto-reassigns when current room is taken on the new dates', function () {
+    [, $type] = hotelWithType(roomCount: 2);
+    $manager  = managerOf($type->hotel);
+
+    // Booking A on days 10-12 (gets room #1).
+    $a = $this->actingAs(customerUser())->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(10)->toDateString(),
+        'check_out_date' => now()->addDays(12)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    // Booking B on days 3-5 (gets room #1 too — no overlap with A).
+    $b = $this->actingAs(customerUser())->postJson('/api/room-bookings', [
+        'room_type_id'   => $type->id,
+        'check_in_date'  => now()->addDays(3)->toDateString(),
+        'check_out_date' => now()->addDays(5)->toDateString(),
+        'guests'         => 2,
+    ])->assertCreated();
+
+    expect($a->json('data.room_id'))->toBe($b->json('data.room_id'));
+
+    // Move B into A's window. B's current room is now taken → auto-reassign.
+    $response = $this->actingAs($manager)
+        ->patchJson("/api/room-bookings/{$b->json('data.id')}", [
+            'check_in_date'  => now()->addDays(10)->toDateString(),
+            'check_out_date' => now()->addDays(12)->toDateString(),
+        ])
+        ->assertOk();
+
+    expect($response->json('data.room_id'))->not->toBe($a->json('data.room_id'));
+    expect($response->json('data.room_id'))->not->toBeNull();
+});
+
 test('date-change on update rejects conflicts with another confirmed booking', function () {
     [, $type] = hotelWithType(roomCount: 1);
     $customer = customerUser();

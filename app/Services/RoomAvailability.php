@@ -6,6 +6,7 @@ use App\Models\Hotel;
 use App\Models\Room;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
+use Illuminate\Database\Eloquent\Collection;
 
 class RoomAvailability
 {
@@ -38,6 +39,50 @@ class RoomAvailability
             'booked' => $booked,
             'free'   => max(0, $total - $booked),
         ];
+    }
+
+    /**
+     * Specific rooms of a type that have no confirmed overlapping booking.
+     * Used by the booking flow to pick a concrete room at creation time and
+     * to validate explicit room reassignments.
+     */
+    public function freeRoomsForType(
+        int $roomTypeId,
+        string $from,
+        string $to,
+        ?int $ignoreBookingId = null,
+    ): Collection {
+        $takenRoomIds = RoomBooking::query()
+            ->where('room_type_id', $roomTypeId)
+            ->where('status', 'confirmed')
+            ->whereNotNull('room_id')
+            ->whereDate('check_in_date', '<', $to)
+            ->whereDate('check_out_date', '>', $from)
+            ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
+            ->pluck('room_id');
+
+        return Room::where('room_type_id', $roomTypeId)
+            ->whereNotIn('id', $takenRoomIds)
+            ->orderBy('id')
+            ->get();
+    }
+
+    /**
+     * True if this specific room has no confirmed overlapping booking.
+     */
+    public function isRoomFree(
+        int $roomId,
+        string $from,
+        string $to,
+        ?int $ignoreBookingId = null,
+    ): bool {
+        return ! RoomBooking::query()
+            ->where('room_id', $roomId)
+            ->where('status', 'confirmed')
+            ->whereDate('check_in_date', '<', $to)
+            ->whereDate('check_out_date', '>', $from)
+            ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
+            ->exists();
     }
 
     /**

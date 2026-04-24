@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\RoomBookingResource;
 use App\Models\Reservation;
+use App\Models\Room;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
 use App\Services\RoomAvailability;
@@ -86,6 +87,12 @@ class RoomBookingController extends Controller
             $data['check_out_date'],
         );
 
+        $roomId = $this->pickFreeRoomId(
+            $roomType->id,
+            $data['check_in_date'],
+            $data['check_out_date'],
+        );
+
         $reservation = $this->resolveReservation($user, $data['reservation_id'] ?? null);
 
         $nights      = (int) Carbon::parse($data['check_in_date'])
@@ -96,7 +103,7 @@ class RoomBookingController extends Controller
             'reservation_id'  => $reservation->id,
             'hotel_id'        => $roomType->hotel_id,
             'room_type_id'    => $roomType->id,
-            'room_id'         => null,
+            'room_id'         => $roomId,
             'status'          => 'confirmed',
             'check_in_date'   => $data['check_in_date'],
             'check_out_date'  => $data['check_out_date'],
@@ -131,20 +138,52 @@ class RoomBookingController extends Controller
         $datesChange = array_key_exists('check_in_date', $data)
             || array_key_exists('check_out_date', $data);
 
-        if ($datesChange) {
-            $checkIn  = $data['check_in_date']  ?? $roomBooking->check_in_date->toDateString();
-            $checkOut = $data['check_out_date'] ?? $roomBooking->check_out_date->toDateString();
+        $effectiveIn  = $data['check_in_date']  ?? $roomBooking->check_in_date->toDateString();
+        $effectiveOut = $data['check_out_date'] ?? $roomBooking->check_out_date->toDateString();
 
+        if ($datesChange) {
             $this->assertAvailability(
                 $roomBooking->room_type_id,
-                $checkIn,
-                $checkOut,
+                $effectiveIn,
+                $effectiveOut,
                 $roomBooking->id,
             );
 
-            $nights = (int) Carbon::parse($checkIn)->diffInDays(Carbon::parse($checkOut));
+            $nights = (int) Carbon::parse($effectiveIn)->diffInDays(Carbon::parse($effectiveOut));
             $data['nights']      = $nights;
             $data['total_price'] = bcmul((string) $roomBooking->price_per_night, (string) $nights, 2);
+
+            // If the caller didn't explicitly reassign a room, keep the current one
+            // when it's still free on the new dates; otherwise auto-pick a free room
+            // of the same type.
+            if (! array_key_exists('room_id', $data)) {
+                $service = app(RoomAvailability::class);
+                $current = $roomBooking->room_id;
+                $currentStillFree = $current !== null
+                    && $service->isRoomFree($current, $effectiveIn, $effectiveOut, $roomBooking->id);
+
+                if (! $currentStillFree) {
+                    $data['room_id'] = $this->pickFreeRoomId(
+                        $roomBooking->room_type_id,
+                        $effectiveIn,
+                        $effectiveOut,
+                        $roomBooking->id,
+                    );
+                }
+            }
+        }
+
+        // Explicit room_id reassignment (manager override): validate the target room
+        // is actually free for the booking's effective dates.
+        if (array_key_exists('room_id', $data) && $data['room_id'] !== null) {
+            $free = app(RoomAvailability::class)
+                ->isRoomFree($data['room_id'], $effectiveIn, $effectiveOut, $roomBooking->id);
+
+            if (! $free) {
+                throw ValidationException::withMessages([
+                    'room_id' => ['This room is already booked for the selected dates.'],
+                ]);
+            }
         }
 
         if (isset($data['guests']) && $data['guests'] > $roomBooking->roomType->capacity) {
@@ -203,8 +242,8 @@ class RoomBookingController extends Controller
     }
 
     /**
-     * Delegates to the shared availability service so this check stays in
-     * lockstep with the public GET /hotels/{hotel}/availability endpoint.
+     * Aggregate capacity guard. Delegates to the shared availability service so
+     * this check stays in lockstep with GET /hotels/{hotel}/availability.
      *
      * Known limitation: count-then-insert. A concurrent request could slip
      * through the window; acceptable for current scope.
@@ -223,6 +262,32 @@ class RoomBookingController extends Controller
                 'room_type_id' => ['No rooms of this type are available for the selected dates.'],
             ]);
         }
+    }
+
+    /**
+     * Pick the lowest-numbered room of the given type not already tied to an
+     * overlapping confirmed booking. Callers must run assertAvailability first
+     * so aggregate capacity is guaranteed before we get here.
+     *
+     * Fallback: if every room of the type is free of specific-room conflicts
+     * (e.g. only legacy null-room bookings are consuming the pool), just take
+     * the first room of the type. assertAvailability has already ruled out the
+     * "no rooms at all" case.
+     */
+    private function pickFreeRoomId(
+        int $roomTypeId,
+        string $checkIn,
+        string $checkOut,
+        ?int $ignoreBookingId = null,
+    ): int {
+        $free = app(RoomAvailability::class)
+            ->freeRoomsForType($roomTypeId, $checkIn, $checkOut, $ignoreBookingId);
+
+        if ($free->isNotEmpty()) {
+            return $free->first()->id;
+        }
+
+        return Room::where('room_type_id', $roomTypeId)->orderBy('id')->firstOrFail()->id;
     }
 
     /**
