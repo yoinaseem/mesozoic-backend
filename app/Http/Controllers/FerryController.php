@@ -32,9 +32,16 @@ class FerryController extends Controller
     {
         $this->authorize('create', Ferry::class);
 
+        $ferryTypeId = $request->input('ferry_type_id');
+
         $data = $request->validate([
             'ferry_type_id' => ['required', Rule::exists('ferry_types', 'id')],
-            'name' => ['required', 'string', 'max:255'],
+            'name' => [
+                'required',
+                'string',
+                'max:255',
+                Rule::unique('ferries')->where(fn ($q) => $q->where('ferry_type_id', $ferryTypeId)),
+            ],
         ]);
 
         $ferry = Ferry::create($data);
@@ -46,9 +53,18 @@ class FerryController extends Controller
     {
         $this->authorize('update', $ferry);
 
+        $ferryTypeId = $request->input('ferry_type_id', $ferry->ferry_type_id);
+
         $data = $request->validate([
             'ferry_type_id' => ['sometimes', Rule::exists('ferry_types', 'id')],
-            'name' => ['sometimes', 'string', 'max:255'],
+            'name' => [
+                'sometimes',
+                'string',
+                'max:255',
+                Rule::unique('ferries')
+                    ->where(fn ($q) => $q->where('ferry_type_id', $ferryTypeId))
+                    ->ignore($ferry->id),
+            ],
         ]);
 
         $ferry->update($data);

@@ -427,6 +427,31 @@ test('ferry-manager can cancel any ferry booking', function () {
     expect($booking->cancelled_at)->not->toBeNull();
 });
 
+test('re-confirming a cancelled ferry booking is rejected', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $manager = fbFerryManager();
+
+    $booking = FerryBooking::create([
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'cancelled',
+        'cancelled_at' => now(),
+        'price_per_guest' => $schedule->ferry->ferryType->price,
+        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+    ]);
+
+    $this->actingAs($manager)
+        ->patchJson("/api/ferry-bookings/{$booking->id}", ['status' => 'confirmed'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['status']);
+
+    $booking->refresh();
+    expect($booking->status)->toBe('cancelled');
+});
+
 test('ferry-manager can update booking status', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);

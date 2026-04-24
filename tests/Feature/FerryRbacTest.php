@@ -97,6 +97,55 @@ test('ferry-manager cannot delete a ferry', function () {
         ->assertForbidden();
 });
 
+test('cannot create a ferry with a duplicate name under the same type', function () {
+    $type = FerryType::factory()->create();
+    Ferry::factory()->create(['ferry_type_id' => $type->id, 'name' => 'Voyager']);
+
+    $this->actingAs(frFerryManager())
+        ->postJson('/api/ferries', [
+            'ferry_type_id' => $type->id,
+            'name' => 'Voyager',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['name']);
+});
+
+test('can create a ferry with the same name under a different type', function () {
+    $typeA = FerryType::factory()->create();
+    $typeB = FerryType::factory()->create();
+    Ferry::factory()->create(['ferry_type_id' => $typeA->id, 'name' => 'Voyager']);
+
+    $this->actingAs(frFerryManager())
+        ->postJson('/api/ferries', [
+            'ferry_type_id' => $typeB->id,
+            'name' => 'Voyager',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.name', 'Voyager')
+        ->assertJsonPath('data.ferry_type_id', $typeB->id);
+});
+
+test('cannot rename a ferry to a name already used under the same type', function () {
+    $type = FerryType::factory()->create();
+    Ferry::factory()->create(['ferry_type_id' => $type->id, 'name' => 'Voyager']);
+    $target = Ferry::factory()->create(['ferry_type_id' => $type->id, 'name' => 'Enterprise']);
+
+    $this->actingAs(frFerryManager())
+        ->patchJson("/api/ferries/{$target->id}", ['name' => 'Voyager'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['name']);
+});
+
+test('can keep the same name on update (ignore self)', function () {
+    $type = FerryType::factory()->create();
+    $ferry = Ferry::factory()->create(['ferry_type_id' => $type->id, 'name' => 'Voyager']);
+
+    $this->actingAs(frFerryManager())
+        ->patchJson("/api/ferries/{$ferry->id}", ['name' => 'Voyager'])
+        ->assertOk()
+        ->assertJsonPath('data.name', 'Voyager');
+});
+
 test('superadmin can delete a ferry', function () {
     $type = FerryType::factory()->create();
     $ferry = Ferry::factory()->create(['ferry_type_id' => $type->id]);

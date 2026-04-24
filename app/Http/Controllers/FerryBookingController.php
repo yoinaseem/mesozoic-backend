@@ -107,7 +107,15 @@ class FerryBookingController extends Controller
         $this->authorize('update', $ferryBooking);
 
         $data = $request->validate([
-            'status' => ['sometimes', Rule::in(['confirmed', 'cancelled'])],
+            'status' => [
+                'sometimes',
+                Rule::in(['confirmed', 'cancelled']),
+                function ($attribute, $value, $fail) use ($ferryBooking) {
+                    if ($value === 'confirmed' && $ferryBooking->status === 'cancelled') {
+                        $fail('A cancelled ferry booking cannot be re-confirmed. Create a new booking instead.');
+                    }
+                },
+            ],
             'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
