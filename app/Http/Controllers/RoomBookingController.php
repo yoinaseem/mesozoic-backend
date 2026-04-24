@@ -4,9 +4,9 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\RoomBookingResource;
 use App\Models\Reservation;
-use App\Models\Room;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
+use App\Services\RoomAvailability;
 use Carbon\Carbon;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
@@ -203,14 +203,11 @@ class RoomBookingController extends Controller
     }
 
     /**
-     * Fewer confirmed overlapping bookings for this RoomType than the hotel
-     * has rooms of that type? Then capacity is available.
+     * Delegates to the shared availability service so this check stays in
+     * lockstep with the public GET /hotels/{hotel}/availability endpoint.
      *
-     * Overlap rule (exclusive checkout):
-     *   A.check_in_date < B.check_out_date AND A.check_out_date > B.check_in_date
-     *
-     * Known limitation: this is count-then-insert. A concurrent request could
-     * slip through the window; acceptable for current scope.
+     * Known limitation: count-then-insert. A concurrent request could slip
+     * through the window; acceptable for current scope.
      */
     private function assertAvailability(
         int $roomTypeId,
@@ -218,17 +215,10 @@ class RoomBookingController extends Controller
         string $checkOut,
         ?int $ignoreBookingId = null,
     ): void {
-        $roomsOfType = Room::where('room_type_id', $roomTypeId)->count();
+        $counts = app(RoomAvailability::class)
+            ->forRoomType($roomTypeId, $checkIn, $checkOut, $ignoreBookingId);
 
-        $conflicts = RoomBooking::query()
-            ->where('room_type_id', $roomTypeId)
-            ->where('status', 'confirmed')
-            ->whereDate('check_in_date', '<', $checkOut)
-            ->whereDate('check_out_date', '>', $checkIn)
-            ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
-            ->count();
-
-        if ($conflicts >= $roomsOfType) {
+        if ($counts['free'] <= 0) {
             throw ValidationException::withMessages([
                 'room_type_id' => ['No rooms of this type are available for the selected dates.'],
             ]);
