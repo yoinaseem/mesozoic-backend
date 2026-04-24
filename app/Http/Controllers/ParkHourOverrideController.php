@@ -18,7 +18,7 @@ class ParkHourOverrideController extends Controller
     public function index(ThemePark $themePark): AnonymousResourceCollection
     {
         return ParkHourOverrideResource::collection(
-            $themePark->hourOverrides()->orderBy('date')->paginate(15)
+            $themePark->hourOverrides()->orderBy('date')->paginate(10)
         );
     }
 

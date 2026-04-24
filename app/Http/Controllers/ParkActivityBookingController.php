@@ -53,7 +53,7 @@ class ParkActivityBookingController extends Controller
         }
 
         return ParkActivityBookingResource::collection(
-            $query->latest('id')->paginate(15)
+            $query->latest('id')->paginate(10)
         );
     }
 

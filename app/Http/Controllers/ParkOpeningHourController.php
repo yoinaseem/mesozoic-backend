@@ -19,7 +19,7 @@ class ParkOpeningHourController extends Controller
     public function index(ThemePark $themePark): AnonymousResourceCollection
     {
         return ParkOpeningHourResource::collection(
-            $themePark->openingHours()->paginate(15)
+            $themePark->openingHours()->paginate(10)
         );
     }
 

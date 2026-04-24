@@ -18,7 +18,7 @@ class ParkActivityScheduleController extends Controller
 
     public function index(ThemePark $themePark, ParkActivity $parkActivity): AnonymousResourceCollection
     {
-        $schedules = $parkActivity->schedules()->paginate(15);
+        $schedules = $parkActivity->schedules()->paginate(10);
         $schedules->getCollection()->each->setRelation('parkActivity', $parkActivity);
 
         return ParkActivityScheduleResource::collection($schedules);

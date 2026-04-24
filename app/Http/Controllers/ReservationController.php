@@ -34,7 +34,7 @@ class ReservationController extends Controller
         }
 
         return ReservationResource::collection(
-            $query->orderByDesc('created_at')->paginate(15)
+            $query->orderByDesc('created_at')->paginate(10)
         );
     }
 

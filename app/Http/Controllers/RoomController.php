@@ -17,7 +17,7 @@ class RoomController extends Controller
 
     public function index(Hotel $hotel): AnonymousResourceCollection
     {
-        $rooms = $hotel->rooms()->with('roomType')->paginate(15);
+        $rooms = $hotel->rooms()->with('roomType')->paginate(10);
 
         return RoomResource::collection($rooms);
     }

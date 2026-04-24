@@ -17,7 +17,7 @@ class BeachActivityScheduleController extends Controller
 
     public function index(BeachActivity $beachActivity): AnonymousResourceCollection
     {
-        $schedules = $beachActivity->schedules()->paginate(15);
+        $schedules = $beachActivity->schedules()->paginate(10);
 
         return BeachActivityScheduleResource::collection($schedules);
     }

@@ -17,7 +17,7 @@ class FerryController extends Controller
     public function index(): AnonymousResourceCollection
     {
         return FerryResource::collection(
-            Ferry::with('ferryType')->paginate(15)
+            Ferry::with('ferryType')->paginate(10)
         );
     }
 

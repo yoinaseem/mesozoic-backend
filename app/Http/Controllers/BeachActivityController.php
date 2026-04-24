@@ -15,7 +15,7 @@ class BeachActivityController extends Controller
 
     public function index(): AnonymousResourceCollection
     {
-        return BeachActivityResource::collection(BeachActivity::paginate(15));
+        return BeachActivityResource::collection(BeachActivity::paginate(10));
     }
 
     public function show(BeachActivity $beachActivity): BeachActivityResource

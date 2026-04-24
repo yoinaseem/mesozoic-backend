@@ -44,7 +44,7 @@ class ParkBookingController extends Controller
         }
 
         return ParkBookingResource::collection(
-            $query->orderByDesc('date')->paginate(15)
+            $query->orderByDesc('date')->paginate(10)
         );
     }
 

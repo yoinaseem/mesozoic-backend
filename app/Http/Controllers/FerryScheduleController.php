@@ -17,13 +17,13 @@ class FerryScheduleController extends Controller
     public function index(): AnonymousResourceCollection
     {
         return FerryScheduleResource::collection(
-            FerrySchedule::query()->with('ferry')->paginate(15)
+            FerrySchedule::query()->with('ferry')->paginate(10)
         );
     }
 
     public function indexForFerry(Ferry $ferry): AnonymousResourceCollection
     {
-        return FerryScheduleResource::collection($ferry->schedules()->paginate(15));
+        return FerryScheduleResource::collection($ferry->schedules()->paginate(10));
     }
 
     public function show(FerrySchedule $ferrySchedule): FerryScheduleResource

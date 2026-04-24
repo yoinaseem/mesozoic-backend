@@ -47,7 +47,7 @@ class BeachBookingController extends Controller
         }
 
         return BeachBookingResource::collection(
-            $query->latest('id')->paginate(15)
+            $query->latest('id')->paginate(10)
         );
     }
 

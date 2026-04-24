@@ -47,7 +47,7 @@ class RoomBookingController extends Controller
         }
 
         return RoomBookingResource::collection(
-            $query->orderByDesc('check_in_date')->paginate(15)
+            $query->orderByDesc('check_in_date')->paginate(10)
         );
     }
 

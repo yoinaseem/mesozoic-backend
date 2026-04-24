@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git fetch:*)",
+      "Bash(find C:Appswwwmesozoic-backend -type f \\\\\\(-name *.md -o -name docs* \\\\\\))"
+    ]
+  }
+}

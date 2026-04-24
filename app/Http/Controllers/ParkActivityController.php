@@ -19,7 +19,7 @@ class ParkActivityController extends Controller
     public function index(ThemePark $themePark): AnonymousResourceCollection
     {
         return ParkActivityResource::collection(
-            $themePark->parkActivities()->paginate(15)
+            $themePark->parkActivities()->paginate(10)
         );
     }
 

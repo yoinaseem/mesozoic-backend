@@ -15,7 +15,7 @@ class HotelController extends Controller
 
     public function index(): AnonymousResourceCollection
     {
-        return HotelResource::collection(Hotel::paginate(15));
+        return HotelResource::collection(Hotel::paginate(10));
     }
 
     public function show(Hotel $hotel): HotelResource
