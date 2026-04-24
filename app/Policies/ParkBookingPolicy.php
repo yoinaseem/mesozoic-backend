@@ -41,16 +41,14 @@ class ParkBookingPolicy
             && $user->hasRole('park-manager');
     }
 
+    /**
+     * Cancellation is staff-only for park bookings — customers cannot
+     * self-cancel. Unified with room/beach/ferry/park-activity policies so
+     * every booking type directs customers to "contact staff" for cancellation.
+     */
     public function delete(User $user, ParkBooking $booking): bool
     {
-        if (! $user->hasPermissionTo('bookings.cancel')) {
-            return false;
-        }
-
-        if ($booking->reservation->user_id === $user->id) {
-            return now()->toDateString() < $booking->date->toDateString();
-        }
-
-        return $user->hasRole('park-manager');
+        return $user->hasPermissionTo('bookings.cancel')
+            && $user->hasRole('park-manager');
     }
 }

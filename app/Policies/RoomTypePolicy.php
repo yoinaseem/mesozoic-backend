@@ -44,4 +44,18 @@ class RoomTypePolicy
     {
         return $user->hasPermissionTo('room-types.delete') && $user->managesHotel($roomType->hotel);
     }
+
+    /**
+     * Restore mirrors delete. Resolve the hotel via withTrashed in case the
+     * parent is also archived, otherwise the belongsTo returns null and
+     * managesHotel would get handed a null.
+     */
+    public function restore(User $user, RoomType $roomType): bool
+    {
+        $hotel = \App\Models\Hotel::withTrashed()->find($roomType->hotel_id);
+
+        return $user->hasPermissionTo('room-types.delete')
+            && $hotel !== null
+            && $user->managesHotel($hotel);
+    }
 }

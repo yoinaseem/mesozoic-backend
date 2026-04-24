@@ -36,4 +36,18 @@ class RoomPolicy
     {
         return $user->hasPermissionTo('rooms.delete') && $user->managesHotel($room->hotel);
     }
+
+    /**
+     * Restore mirrors delete. The parent hotel may itself be archived at
+     * this point, so we resolve it via withTrashed so managesHotel can do
+     * its pivot check.
+     */
+    public function restore(User $user, Room $room): bool
+    {
+        $hotel = \App\Models\Hotel::withTrashed()->find($room->hotel_id);
+
+        return $user->hasPermissionTo('rooms.delete')
+            && $hotel !== null
+            && $user->managesHotel($hotel);
+    }
 }

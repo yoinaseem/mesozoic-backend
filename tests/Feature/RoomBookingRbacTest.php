@@ -262,11 +262,14 @@ test('customer cannot view another customers booking', function () {
         ->assertForbidden();
 });
 
-test('customer cancels own booking before check-in and row persists', function () {
-    [, $type]   = hotelWithType();
-    $customer   = customerUser();
+test('customer cannot cancel their own room booking — staff only', function () {
+    // Cancellation is staff-only across all booking modules. The customer UX
+    // is "contact staff" and hitting DELETE is blocked at the middleware
+    // layer because the customer role no longer holds bookings.cancel.
+    [, $type]    = hotelWithType();
+    $customer    = customerUser();
     $reservation = Reservation::create(['user_id' => $customer->id]);
-    $booking    = confirmedBooking(
+    $booking     = confirmedBooking(
         $reservation,
         $type,
         now()->addDays(3)->toDateString(),
@@ -275,6 +278,27 @@ test('customer cancels own booking before check-in and row persists', function (
 
     $this->actingAs($customer)
         ->deleteJson("/api/room-bookings/{$booking->id}")
+        ->assertForbidden();
+
+    $booking->refresh();
+    expect($booking->status)->toBe('confirmed');
+    expect($booking->cancelled_at)->toBeNull();
+});
+
+test('hotel-manager can DELETE a room booking (soft-cancel)', function () {
+    [$hotel, $type] = hotelWithType();
+    $manager = managerOf($hotel);
+    $guest   = customerUser();
+    $reservation = Reservation::create(['user_id' => $guest->id]);
+    $booking = confirmedBooking(
+        $reservation,
+        $type,
+        now()->addDays(3)->toDateString(),
+        now()->addDays(5)->toDateString(),
+    );
+
+    $this->actingAs($manager)
+        ->deleteJson("/api/room-bookings/{$booking->id}")
         ->assertNoContent();
 
     $booking->refresh();
@@ -282,20 +306,24 @@ test('customer cancels own booking before check-in and row persists', function (
     expect($booking->cancelled_at)->not->toBeNull();
 });
 
-test('customer cannot cancel own booking after check-in has started', function () {
-    [, $type]   = hotelWithType();
-    $customer   = customerUser();
+test('room booking with archived hotel still serializes hotel block (withTrashed)', function () {
+    [$hotel, $type] = hotelWithType();
+    $customer = customerUser();
     $reservation = Reservation::create(['user_id' => $customer->id]);
-    $booking    = confirmedBooking(
+    $booking = confirmedBooking(
         $reservation,
         $type,
-        now()->subDay()->toDateString(),
-        now()->addDays(2)->toDateString(),
+        now()->subDays(10)->toDateString(),
+        now()->subDays(8)->toDateString(),
     );
+    // Archive the hotel now that the booking is fully historical.
+    $hotel->delete();
 
-    $this->actingAs($customer)
-        ->deleteJson("/api/room-bookings/{$booking->id}")
-        ->assertForbidden();
+    $response = $this->actingAs($customer)
+        ->getJson("/api/room-bookings/{$booking->id}")
+        ->assertOk();
+
+    expect($response->json('data.hotel'))->not->toBeNull();
 });
 
 test('hotel-manager can cancel a booking in their hotel', function () {

@@ -23,7 +23,10 @@ class FerryBookingController extends Controller
         $this->authorize('viewAny', FerryBooking::class);
         $user = $request->user();
 
-        $query = FerryBooking::query()->with(['reservation.user', 'schedule.ferry.ferryType']);
+        $query = FerryBooking::query()->with([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType',
+        ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('ferry-manager')) {
             // no scope
@@ -56,7 +59,10 @@ class FerryBookingController extends Controller
     {
         $this->authorize('view', $ferryBooking);
 
-        $ferryBooking->load(['reservation.user', 'schedule.ferry.ferryType']);
+        $ferryBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType',
+        ]);
 
         return new FerryBookingResource($ferryBooking);
     }
@@ -98,7 +104,10 @@ class FerryBookingController extends Controller
         ]);
 
         return (new FerryBookingResource(
-            $booking->load(['reservation.user', 'schedule.ferry.ferryType'])
+            $booking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType',
+        ])
         ))->response()->setStatusCode(201);
     }
 
@@ -141,7 +150,10 @@ class FerryBookingController extends Controller
         $ferryBooking->update($data);
 
         return new FerryBookingResource(
-            $ferryBooking->load(['reservation.user', 'schedule.ferry.ferryType'])
+            $ferryBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType',
+        ])
         );
     }
 

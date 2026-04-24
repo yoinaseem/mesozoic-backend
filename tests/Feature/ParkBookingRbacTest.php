@@ -310,10 +310,11 @@ test('same (reservation, date) is allowed for a different park', function () {
     ])->assertCreated();
 });
 
-test('same park-day pass can be re-booked after the first is cancelled', function () {
+test('same park-day pass can be re-booked after staff cancels the first', function () {
     $customer                 = parkCustomer();
     [$reservation, $checkIn]  = singleRoomReservation($customer);
     $park                     = openEveryDayPark();
+    $manager                  = parkManagerUser();
 
     $first = $this->actingAs($customer)->postJson('/api/park-bookings', [
         'reservation_id' => $reservation->id,
@@ -322,7 +323,8 @@ test('same park-day pass can be re-booked after the first is cancelled', functio
         'guests'         => 2,
     ])->assertCreated();
 
-    $this->actingAs($customer)
+    // Cancellation is staff-only — park-manager issues the DELETE.
+    $this->actingAs($manager)
         ->deleteJson('/api/park-bookings/'.$first->json('data.id'))
         ->assertNoContent();
 
@@ -445,7 +447,9 @@ test('customer cannot view another customers park booking', function () {
         ->assertForbidden();
 });
 
-test('customer cancels own park booking before the visit date', function () {
+test('customer cannot cancel own park booking — staff only', function () {
+    // Cancellation is staff-only across every booking module (room, park,
+    // beach, ferry, park-activity). Customer DELETE returns 403.
     $customer                = parkCustomer();
     [$reservation, $checkIn] = singleRoomReservation($customer);
     $park                    = openEveryDayPark();
@@ -462,11 +466,11 @@ test('customer cancels own park booking before the visit date', function () {
 
     $this->actingAs($customer)
         ->deleteJson("/api/park-bookings/{$booking->id}")
-        ->assertNoContent();
+        ->assertForbidden();
 
     $booking->refresh();
-    expect($booking->status)->toBe('cancelled');
-    expect($booking->cancelled_at)->not->toBeNull();
+    expect($booking->status)->toBe('confirmed');
+    expect($booking->cancelled_at)->toBeNull();
 });
 
 test('customer cannot cancel a park booking on the visit date', function () {

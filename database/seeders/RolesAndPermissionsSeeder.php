@@ -83,9 +83,11 @@ class RolesAndPermissionsSeeder extends Seeder
             'bookings.view', 'bookings.update', 'bookings.cancel',
         ]);
 
-        // Customer: self-service booking flow — create, view, and cancel their own bookings.
+        // Customer: self-service booking flow — create and view their own bookings.
+        // Cancellation is staff-only across every booking module; customer-facing
+        // UX directs to "contact staff" so all booking types behave the same.
         $customer->syncPermissions([
-            'bookings.view', 'bookings.create', 'bookings.cancel',
+            'bookings.view', 'bookings.create',
         ]);
 
         app(PermissionRegistrar::class)->forgetCachedPermissions();

@@ -41,14 +41,15 @@ class RoomBookingPolicy
             && $user->managesHotel($booking->hotel);
     }
 
+    /**
+     * Cancellation is staff-only — customers do not self-cancel room bookings.
+     * Aligned with beach/park/ferry/park-activity bookings; customer-facing
+     * UX is "contact staff" rather than a DELETE button.
+     */
     public function delete(User $user, RoomBooking $booking): bool
     {
         if (! $user->hasPermissionTo('bookings.cancel')) {
             return false;
-        }
-
-        if ($booking->reservation->user_id === $user->id) {
-            return now()->toDateString() < $booking->check_in_date->toDateString();
         }
 
         return $user->managesHotel($booking->hotel);

@@ -65,6 +65,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Users — UserPolicy gates every verb (superadmin-only + self-access).
     Route::apiResource('users', UserController::class);
+    Route::post('users/{user}/restore', [UserController::class, 'restore'])
+        ->withTrashed();
 
     // Hotel mutations — each verb gets its specific permission on the route,
     // then HotelPolicy re-checks on a per-hotel basis for update (scope).
@@ -73,6 +75,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::match(['put', 'patch'], '/hotels/{hotel}', [HotelController::class, 'update'])
         ->middleware('permission:hotels.update');
     Route::delete('/hotels/{hotel}', [HotelController::class, 'destroy'])
+        ->middleware('permission:hotels.delete');
+    // Restore an archived hotel — withTrashed() so the route-model binding
+    // resolves the soft-deleted row. Same permission + policy as delete.
+    Route::post('/hotels/{hotel}/restore', [HotelController::class, 'restore'])
+        ->withTrashed()
         ->middleware('permission:hotels.delete');
 
     // Nested room-type and room mutations — pipe = OR (any of the three
@@ -83,6 +90,18 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('permission:room-types.create|room-types.update|room-types.delete');
         Route::apiResource('rooms', RoomController::class)->except(['index', 'show'])
             ->middleware('permission:rooms.create|rooms.update|rooms.delete');
+    });
+
+    // Restore endpoints for archived room-types / rooms. withTrashed() is
+    // applied on both bindings so archived parents (and their children)
+    // still resolve.
+    Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
+        Route::post('room-types/{roomType}/restore', [RoomTypeController::class, 'restore'])
+            ->withTrashed()
+            ->middleware('permission:room-types.delete');
+        Route::post('rooms/{room}/restore', [RoomController::class, 'restore'])
+            ->withTrashed()
+            ->middleware('permission:rooms.delete');
     });
 
     // Beach activity mutations

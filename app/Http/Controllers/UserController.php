@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\UserResource;
+use App\Models\RoomBooking;
 use App\Models\User;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
@@ -61,8 +62,35 @@ class UserController extends Controller
     {
         $this->authorize('delete', $user);
 
+        // Upcoming room bookings = the user is actively a guest somewhere.
+        // Ticket bookings (park/beach/ferry/park-activity) are time-locked to
+        // a confirmed room stay, so a clean room-booking slate implies a
+        // clean ticket slate too.
+        $blocking = RoomBooking::query()
+            ->upcomingActive()
+            ->whereHas('reservation', fn ($q) => $q->where('user_id', $user->id))
+            ->count();
+
+        if ($blocking > 0) {
+            return response()->json([
+                'message'           => 'Cannot archive a user with upcoming or in-progress bookings.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
         $user->delete();
 
         return response()->json(null, 204);
+    }
+
+    public function restore(User $user): UserResource
+    {
+        $this->authorize('restore', $user);
+
+        if ($user->trashed()) {
+            $user->restore();
+        }
+
+        return new UserResource($user);
     }
 }

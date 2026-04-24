@@ -46,4 +46,13 @@ class UserPolicy
     {
         return false;
     }
+
+    /**
+     * Restore mirrors delete — superadmin-only, handled by before().
+     * Non-superadmins always hit false here.
+     */
+    public function restore(User $user, User $model): bool
+    {
+        return false;
+    }
 }

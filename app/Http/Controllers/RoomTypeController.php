@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\RoomTypeResource;
 use App\Models\Hotel;
+use App\Models\RoomBooking;
 use App\Models\RoomType;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
@@ -73,8 +74,44 @@ class RoomTypeController extends Controller
     {
         $this->authorize('delete', $roomType);
 
+        $blocking = RoomBooking::query()
+            ->upcomingActive()
+            ->where('room_type_id', $roomType->id)
+            ->count();
+
+        if ($blocking > 0) {
+            return response()->json([
+                'message'           => 'Cannot archive a room type with upcoming or in-progress bookings.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
         $roomType->delete();
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Restore a room type. Parent hotel must be live — if the hotel is
+     * still archived, the caller must restore the hotel first (that
+     * cascade-restore will bring this room type back too).
+     */
+    public function restore(Hotel $hotel, RoomType $roomType): RoomTypeResource
+    {
+        $this->authorize('restore', $roomType);
+
+        if ($hotel->trashed()) {
+            abort(response()->json([
+                'message' => 'Restore the parent hotel first.',
+            ], 409));
+        }
+
+        if ($roomType->trashed()) {
+            $roomType->restore();
+        }
+
+        $roomType->loadCount('rooms');
+
+        return new RoomTypeResource($roomType);
     }
 }

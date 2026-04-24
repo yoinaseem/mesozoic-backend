@@ -25,7 +25,14 @@ class RoomBookingController extends Controller
         $this->authorize('viewAny', RoomBooking::class);
         $user = $request->user();
 
-        $query = RoomBooking::query()->with(['reservation.user', 'hotel', 'roomType', 'room']);
+        // Historical bookings can reference archived hotels/room-types/rooms,
+        // so eager-load with trashed to keep those rows fully rendered.
+        $query = RoomBooking::query()->with([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'hotel'    => fn ($q) => $q->withTrashed(),
+            'roomType' => fn ($q) => $q->withTrashed(),
+            'room'     => fn ($q) => $q->withTrashed(),
+        ]);
 
         if ($user->hasRole('superadmin')) {
             // no scope
@@ -55,7 +62,12 @@ class RoomBookingController extends Controller
     {
         $this->authorize('view', $roomBooking);
 
-        $roomBooking->load(['reservation.user', 'hotel', 'roomType', 'room']);
+        $roomBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'hotel'    => fn ($q) => $q->withTrashed(),
+            'roomType' => fn ($q) => $q->withTrashed(),
+            'room'     => fn ($q) => $q->withTrashed(),
+        ]);
 
         return new RoomBookingResource($roomBooking);
     }
@@ -114,7 +126,12 @@ class RoomBookingController extends Controller
         ]);
 
         return (new RoomBookingResource(
-            $booking->load(['reservation.user', 'hotel', 'roomType', 'room'])
+            $booking->load([
+                'reservation.user',
+                'hotel'    => fn ($q) => $q->withTrashed(),
+                'roomType' => fn ($q) => $q->withTrashed(),
+                'room'     => fn ($q) => $q->withTrashed(),
+            ])
         ))->response()->setStatusCode(201);
     }
 
@@ -201,7 +218,12 @@ class RoomBookingController extends Controller
         $roomBooking->update($data);
 
         return new RoomBookingResource(
-            $roomBooking->load(['reservation.user', 'hotel', 'roomType', 'room'])
+            $roomBooking->load([
+                'reservation.user',
+                'hotel'    => fn ($q) => $q->withTrashed(),
+                'roomType' => fn ($q) => $q->withTrashed(),
+                'room'     => fn ($q) => $q->withTrashed(),
+            ])
         );
     }
 

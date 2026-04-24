@@ -22,7 +22,10 @@ class BeachBookingController extends Controller
         $this->authorize('viewAny', BeachBooking::class);
         $user = $request->user();
 
-        $query = BeachBooking::query()->with(['reservation.user', 'schedule.activity']);
+        $query = BeachBooking::query()->with([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.activity',
+        ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('beach-manager')) {
             // no scope — beach-manager has no per-activity pivot today
@@ -55,7 +58,10 @@ class BeachBookingController extends Controller
     {
         $this->authorize('view', $beachBooking);
 
-        $beachBooking->load(['reservation.user', 'schedule.activity']);
+        $beachBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.activity',
+        ]);
 
         return new BeachBookingResource($beachBooking);
     }
@@ -93,7 +99,10 @@ class BeachBookingController extends Controller
         ]);
 
         return (new BeachBookingResource(
-            $booking->load(['reservation.user', 'schedule.activity'])
+            $booking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.activity',
+        ])
         ))->response()->setStatusCode(201);
     }
 
@@ -127,7 +136,10 @@ class BeachBookingController extends Controller
         $beachBooking->update($data);
 
         return new BeachBookingResource(
-            $beachBooking->load(['reservation.user', 'schedule.activity'])
+            $beachBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.activity',
+        ])
         );
     }
 

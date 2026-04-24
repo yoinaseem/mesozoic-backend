@@ -25,7 +25,10 @@ class ParkActivityBookingController extends Controller
         $this->authorize('viewAny', ParkActivityBooking::class);
         $user = $request->user();
 
-        $query = ParkActivityBooking::query()->with(['reservation.user', 'schedule.parkActivity.themePark']);
+        $query = ParkActivityBooking::query()->with([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark',
+        ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
             // no scope
@@ -61,7 +64,10 @@ class ParkActivityBookingController extends Controller
     {
         $this->authorize('view', $parkActivityBooking);
 
-        $parkActivityBooking->load(['reservation.user', 'schedule.parkActivity.themePark']);
+        $parkActivityBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark',
+        ]);
 
         return new ParkActivityBookingResource($parkActivityBooking);
     }
@@ -108,7 +114,10 @@ class ParkActivityBookingController extends Controller
         ]);
 
         return (new ParkActivityBookingResource(
-            $booking->load(['reservation.user', 'schedule.parkActivity.themePark'])
+            $booking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark',
+        ])
         ))->response()->setStatusCode(201);
     }
 
@@ -144,7 +153,10 @@ class ParkActivityBookingController extends Controller
         $parkActivityBooking->update($data);
 
         return new ParkActivityBookingResource(
-            $parkActivityBooking->load(['reservation.user', 'schedule.parkActivity.themePark'])
+            $parkActivityBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark',
+        ])
         );
     }
 

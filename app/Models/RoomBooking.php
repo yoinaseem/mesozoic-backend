@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,6 +10,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class RoomBooking extends Model
 {
     use HasFactory;
+
+    /**
+     * Confirmed bookings whose checkout hasn't passed yet — the set that
+     * blocks hotel/room-type/room archival. Inclusive of today so a guest
+     * mid-stay still counts as an in-progress booking.
+     */
+    public function scopeUpcomingActive(Builder $query): Builder
+    {
+        return $query
+            ->where('status', 'confirmed')
+            ->whereDate('check_out_date', '>=', today());
+    }
 
     protected $fillable = [
         'reservation_id',

@@ -22,7 +22,10 @@ class ParkBookingController extends Controller
         $this->authorize('viewAny', ParkBooking::class);
         $user = $request->user();
 
-        $query = ParkBooking::query()->with(['reservation.user', 'park']);
+        $query = ParkBooking::query()->with([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'park',
+        ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
             // no scope — park-manager has no per-park pivot today
@@ -52,7 +55,10 @@ class ParkBookingController extends Controller
     {
         $this->authorize('view', $parkBooking);
 
-        $parkBooking->load(['reservation.user', 'park']);
+        $parkBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'park',
+        ]);
 
         return new ParkBookingResource($parkBooking);
     }
@@ -92,7 +98,10 @@ class ParkBookingController extends Controller
         ]);
 
         return (new ParkBookingResource(
-            $booking->load(['reservation.user', 'park'])
+            $booking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'park',
+        ])
         ))->response()->setStatusCode(201);
     }
 
@@ -148,7 +157,10 @@ class ParkBookingController extends Controller
         $parkBooking->update($data);
 
         return new ParkBookingResource(
-            $parkBooking->load(['reservation.user', 'park'])
+            $parkBooking->load([
+            'reservation.user' => fn ($q) => $q->withTrashed(),
+            'park',
+        ])
         );
     }
 

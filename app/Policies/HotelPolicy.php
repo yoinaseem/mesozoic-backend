@@ -55,4 +55,13 @@ class HotelPolicy
     {
         return false;
     }
+
+    /**
+     * Restore is superadmin-only, mirroring delete. Non-superadmins are
+     * short-circuited before() never reaches this method.
+     */
+    public function restore(User $user, Hotel $hotel): bool
+    {
+        return false;
+    }
 }

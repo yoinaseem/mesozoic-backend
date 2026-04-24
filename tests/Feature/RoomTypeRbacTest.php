@@ -91,7 +91,7 @@ test('hotel-manager cannot update room type in unrelated hotel', function () {
         ->assertForbidden();
 });
 
-test('superadmin can delete any room type', function () {
+test('superadmin can archive any room type (soft-delete)', function () {
     $hotel    = Hotel::factory()->create();
     $roomType = makeRoomType($hotel);
     $admin    = User::factory()->create();
@@ -100,4 +100,50 @@ test('superadmin can delete any room type', function () {
     $this->actingAs($admin)
         ->deleteJson("/api/hotels/{$hotel->id}/room-types/{$roomType->id}")
         ->assertNoContent();
+
+    expect($roomType->fresh()->trashed())->toBeTrue();
+});
+
+test('archive is blocked when room type has upcoming confirmed bookings', function () {
+    $hotel    = Hotel::factory()->create();
+    $roomType = makeRoomType($hotel);
+    $hotel->rooms()->create(['room_type_id' => $roomType->id, 'room_no' => '101']);
+
+    $guest       = User::factory()->create();
+    $reservation = \App\Models\Reservation::create(['user_id' => $guest->id]);
+    \App\Models\RoomBooking::create([
+        'reservation_id'  => $reservation->id,
+        'hotel_id'        => $hotel->id,
+        'room_type_id'    => $roomType->id,
+        'status'          => 'confirmed',
+        'check_in_date'   => now()->addDays(3)->toDateString(),
+        'check_out_date'  => now()->addDays(5)->toDateString(),
+        'guests'          => 2,
+        'price_per_night' => 100,
+        'nights'          => 2,
+        'total_price'     => 200,
+    ]);
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/hotels/{$hotel->id}/room-types/{$roomType->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($roomType->fresh()->trashed())->toBeFalse();
+});
+
+test('archived room type cannot be restored while parent hotel is archived', function () {
+    $hotel    = Hotel::factory()->create();
+    $roomType = makeRoomType($hotel);
+    $hotel->delete();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->postJson("/api/hotels/{$hotel->id}/room-types/{$roomType->id}/restore")
+        ->assertStatus(409);
 });

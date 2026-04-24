@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\HotelResource;
 use App\Models\Hotel;
+use App\Models\RoomBooking;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -68,8 +69,31 @@ class HotelController extends Controller
     {
         $this->authorize('delete', $hotel);
 
+        $blocking = RoomBooking::query()
+            ->upcomingActive()
+            ->where('hotel_id', $hotel->id)
+            ->count();
+
+        if ($blocking > 0) {
+            return response()->json([
+                'message'           => 'Cannot archive a hotel with upcoming or in-progress bookings.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
         $hotel->delete();
 
         return response()->json(null, 204);
+    }
+
+    public function restore(Hotel $hotel): HotelResource
+    {
+        $this->authorize('restore', $hotel);
+
+        if ($hotel->trashed()) {
+            $hotel->restore();
+        }
+
+        return new HotelResource($hotel);
     }
 }
