@@ -40,12 +40,12 @@ class RolesAndPermissionsSeeder extends Seeder
             Permission::firstOrCreate(['name' => $name, 'guard_name' => 'web']);
         }
 
-        $superadmin    = Role::firstOrCreate(['name' => 'superadmin', 'guard_name' => 'web']);
-        $hotelManager  = Role::firstOrCreate(['name' => 'hotel-manager', 'guard_name' => 'web']);
-        $ferryManager  = Role::firstOrCreate(['name' => 'ferry-manager', 'guard_name' => 'web']);
-        $parkManager   = Role::firstOrCreate(['name' => 'park-manager', 'guard_name' => 'web']);
-        $beachManager  = Role::firstOrCreate(['name' => 'beach-manager', 'guard_name' => 'web']);
-        $customer      = Role::firstOrCreate(['name' => 'customer', 'guard_name' => 'web']);
+        $superadmin = Role::firstOrCreate(['name' => 'superadmin', 'guard_name' => 'web']);
+        $hotelManager = Role::firstOrCreate(['name' => 'hotel-manager', 'guard_name' => 'web']);
+        $ferryManager = Role::firstOrCreate(['name' => 'ferry-manager', 'guard_name' => 'web']);
+        $parkManager = Role::firstOrCreate(['name' => 'park-manager', 'guard_name' => 'web']);
+        $beachManager = Role::firstOrCreate(['name' => 'beach-manager', 'guard_name' => 'web']);
+        $customer = Role::firstOrCreate(['name' => 'customer', 'guard_name' => 'web']);
 
         // Superadmin: everything.
         $superadmin->syncPermissions(Permission::all());
@@ -62,9 +62,26 @@ class RolesAndPermissionsSeeder extends Seeder
         // Module managers get view, create, and update on their module. Delete stays
         // with superadmin. Unlike hotel-manager (which is pivot-scoped), these roles
         // manage all resources in their module without per-instance ownership.
-        $ferryManager->syncPermissions(['ferry.view', 'ferry.create', 'ferry.update']);
-        $parkManager->syncPermissions(['park.view', 'park.create', 'park.update']);
-        $beachManager->syncPermissions(['beach.view', 'beach.create', 'beach.update']);
+        $ferryManager->syncPermissions([
+            'ferry.view', 'ferry.create', 'ferry.update',
+            // Ferry-managers need bookings.* to manage ferry trip bookings
+            // (see /api/ferry-bookings). Customers cannot self-cancel ferry
+            // bookings, so bookings.cancel routes through here.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
+        $parkManager->syncPermissions([
+            'park.view', 'park.create', 'park.update',
+            // Park-managers need bookings.* to manage park day-pass bookings
+            // (see /api/park-bookings). Matches hotel-manager's bookings scope.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
+        $beachManager->syncPermissions([
+            'beach.view', 'beach.create', 'beach.update',
+            // Beach-managers need bookings.* to manage beach session bookings
+            // (see /api/beach-bookings). Customers cannot self-cancel beach
+            // bookings, so bookings.cancel effectively routes through here.
+            'bookings.view', 'bookings.update', 'bookings.cancel',
+        ]);
 
         // Customer: self-service booking flow — create, view, and cancel their own bookings.
         $customer->syncPermissions([
