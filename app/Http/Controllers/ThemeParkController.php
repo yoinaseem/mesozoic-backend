@@ -15,7 +15,7 @@ class ThemeParkController extends Controller
 
     public function index(): AnonymousResourceCollection
     {
-        return ThemeParkResource::collection(ThemePark::paginate(15));
+        return ThemeParkResource::collection(ThemePark::paginate(10));
     }
 
     public function show(ThemePark $themePark): ThemeParkResource
