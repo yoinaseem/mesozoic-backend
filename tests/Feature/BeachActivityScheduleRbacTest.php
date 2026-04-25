@@ -11,6 +11,7 @@ test('public can list schedules without auth', function () {
     $activity->schedules()->create([
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
 
@@ -22,6 +23,7 @@ test('public can view a single schedule without auth', function () {
     $schedule = $activity->schedules()->create([
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
 
@@ -34,6 +36,7 @@ test('unauthenticated user cannot create a schedule', function () {
     $this->postJson("/api/beach-activities/{$activity->id}/schedules", [
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ])->assertUnauthorized();
 });
@@ -46,6 +49,7 @@ test('customer cannot create a schedule', function () {
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => '2026-05-01',
             'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
             'status' => BeachActivitySchedule::STATUS_PENDING,
         ])
         ->assertForbidden();
@@ -59,10 +63,12 @@ test('beach-manager can create a schedule', function () {
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => '2026-05-01',
             'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
             'status' => BeachActivitySchedule::STATUS_PENDING,
         ])
         ->assertCreated()
-        ->assertJsonPath('data.status', BeachActivitySchedule::STATUS_PENDING);
+        ->assertJsonPath('data.status', BeachActivitySchedule::STATUS_PENDING)
+        ->assertJsonPath('data.end_time', '10:00:00');
 });
 
 test('superadmin can create a schedule', function () {
@@ -73,6 +79,7 @@ test('superadmin can create a schedule', function () {
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => '2026-05-01',
             'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
             'status' => BeachActivitySchedule::STATUS_CONFIRMED,
         ])
         ->assertCreated()
@@ -84,6 +91,7 @@ test('beach-manager can update a schedule', function () {
     $schedule = $activity->schedules()->create([
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
     $manager = User::factory()->beachManager()->create();
@@ -101,6 +109,7 @@ test('beach-manager cannot delete a schedule', function () {
     $schedule = $activity->schedules()->create([
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
     $manager = User::factory()->beachManager()->create();
@@ -115,6 +124,7 @@ test('superadmin can delete a schedule', function () {
     $schedule = $activity->schedules()->create([
         'activity_date' => '2026-05-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
     $admin = User::factory()->superadmin()->create();
@@ -134,6 +144,7 @@ test('schedule on a past date is rejected on create', function () {
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => now()->subDay()->toDateString(),
             'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
         ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('activity_date');
@@ -144,6 +155,7 @@ test('moving a schedule to a past activity_date via update is rejected', functio
     $schedule = $activity->schedules()->create([
         'activity_date' => now()->addDays(5)->toDateString(),
         'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
     $manager = User::factory()->beachManager()->create();
@@ -161,6 +173,7 @@ test('status-only update on a past schedule succeeds', function () {
     $schedule = $activity->schedules()->create([
         'activity_date' => now()->subDays(5)->toDateString(),
         'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
         'status' => BeachActivitySchedule::STATUS_CONFIRMED,
     ]);
     $manager = User::factory()->beachManager()->create();
@@ -181,6 +194,7 @@ test('schedule slot can be reused after the original is cancelled', function () 
     $original = $activity->schedules()->create([
         'activity_date' => $futureDate,
         'start_time' => '14:00:00',
+        'end_time' => '15:00:00',
         'status' => BeachActivitySchedule::STATUS_CANCELLED,
     ]);
 
@@ -190,6 +204,7 @@ test('schedule slot can be reused after the original is cancelled', function () 
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => $futureDate,
             'start_time' => '14:00:00',
+            'end_time' => '15:00:00',
         ])
         ->assertCreated();
 
@@ -202,6 +217,7 @@ test('duplicate live slot is rejected with 422 errors.start_time', function () {
     $activity->schedules()->create([
         'activity_date' => $futureDate,
         'start_time' => '14:00:00',
+        'end_time' => '15:00:00',
         'status' => BeachActivitySchedule::STATUS_PENDING,
     ]);
 
@@ -211,7 +227,146 @@ test('duplicate live slot is rejected with 422 errors.start_time', function () {
         ->postJson("/api/beach-activities/{$activity->id}/schedules", [
             'activity_date' => $futureDate,
             'start_time' => '14:00:00',
+            'end_time' => '15:00:00',
         ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('start_time');
+});
+
+// DESD-97 — Model B canonical end_time
+
+test('create rejects missing end_time', function () {
+    $activity = BeachActivity::factory()->create();
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/beach-activities/{$activity->id}/schedules", [
+            'activity_date' => now()->addDays(3)->toDateString(),
+            'start_time' => '09:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('end_time');
+});
+
+test('create rejects end_time equal to start_time', function () {
+    $activity = BeachActivity::factory()->create();
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/beach-activities/{$activity->id}/schedules", [
+            'activity_date' => now()->addDays(3)->toDateString(),
+            'start_time' => '09:00:00',
+            'end_time' => '09:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('end_time');
+});
+
+test('overnight end_time stored verbatim and emitted as-is', function () {
+    $activity = BeachActivity::factory()->create();
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/beach-activities/{$activity->id}/schedules", [
+            'activity_date' => now()->addDays(3)->toDateString(),
+            'start_time' => '22:00:00',
+            'end_time' => '02:00:00',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.start_time', '22:00:00')
+        ->assertJsonPath('data.end_time', '02:00:00');
+});
+
+test('end_time is emitted by the schedule resource', function () {
+    $activity = BeachActivity::factory()->create();
+    $schedule = $activity->schedules()->create([
+        'activity_date' => '2026-05-01',
+        'start_time' => '09:00:00',
+        'end_time' => '11:30:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+
+    getJson("/api/beach-activities/{$activity->id}/schedules/{$schedule->id}")
+        ->assertOk()
+        ->assertJsonPath('data.start_time', '09:00:00')
+        ->assertJsonPath('data.end_time', '11:30:00');
+});
+
+// DESD-97 — overlap detection (BeachScheduleReconciler)
+
+test('overlapping schedule on create is rejected with 422 errors.start_time', function () {
+    $activity = BeachActivity::factory()->create();
+    $futureDate = now()->addDays(7)->toDateString();
+    $activity->schedules()->create([
+        'activity_date' => $futureDate,
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/beach-activities/{$activity->id}/schedules", [
+            'activity_date' => $futureDate,
+            'start_time' => '10:30:00',
+            'end_time' => '11:30:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
+});
+
+test('non-overlapping back-to-back schedules are accepted (half-open intervals)', function () {
+    $activity = BeachActivity::factory()->create();
+    $futureDate = now()->addDays(7)->toDateString();
+    $activity->schedules()->create([
+        'activity_date' => $futureDate,
+        'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/beach-activities/{$activity->id}/schedules", [
+            'activity_date' => $futureDate,
+            'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
+        ])
+        ->assertCreated();
+});
+
+test('overlap on update is rejected; ignoring the schedule itself works', function () {
+    $activity = BeachActivity::factory()->create();
+    $futureDate = now()->addDays(7)->toDateString();
+    $activity->schedules()->create([
+        'activity_date' => $futureDate,
+        'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+    $target = $activity->schedules()->create([
+        'activity_date' => $futureDate,
+        'start_time' => '11:00:00',
+        'end_time' => '12:00:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+    $manager = User::factory()->beachManager()->create();
+
+    // Move target to 09:30–10:30 — overlaps the 09:00–10:00 row.
+    $this->actingAs($manager)
+        ->patchJson("/api/beach-activities/{$activity->id}/schedules/{$target->id}", [
+            'start_time' => '09:30:00',
+            'end_time' => '10:30:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
+
+    // Trim the target's own window without touching another row — should pass
+    // (ignoreId excludes self from the overlap query).
+    $this->actingAs($manager)
+        ->patchJson("/api/beach-activities/{$activity->id}/schedules/{$target->id}", [
+            'end_time' => '11:30:00',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.end_time', '11:30:00');
 });

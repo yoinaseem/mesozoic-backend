@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Http\Resources\BeachActivityScheduleResource;
 use App\Models\BeachActivity;
 use App\Models\BeachActivitySchedule;
+use App\Services\BeachScheduleReconciler;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -29,8 +30,11 @@ class BeachActivityScheduleController extends Controller
         return new BeachActivityScheduleResource($schedule);
     }
 
-    public function store(Request $request, BeachActivity $beachActivity): JsonResponse
-    {
+    public function store(
+        Request $request,
+        BeachActivity $beachActivity,
+        BeachScheduleReconciler $reconciler,
+    ): JsonResponse {
         $this->authorize('create', BeachActivitySchedule::class);
 
         $data = $request->validate([
@@ -44,7 +48,7 @@ class BeachActivityScheduleController extends Controller
             ])],
         ]);
 
-        return DB::transaction(function () use ($beachActivity, $data) {
+        return DB::transaction(function () use ($beachActivity, $data, $reconciler) {
             $activity = BeachActivity::query()
                 ->whereKey($beachActivity->id)
                 ->lockForUpdate()
@@ -65,6 +69,24 @@ class BeachActivityScheduleController extends Controller
                 ]);
             }
 
+            // Overlap check — strict superset of the exact-match duplicate
+            // check above. A duplicate is also an overlap; the duplicate
+            // check above runs first only because it produces a slightly
+            // more specific error message.
+            $overlap = $reconciler->findOverlappingSchedule(
+                $activity,
+                $data['activity_date'],
+                $data['start_time'],
+                $data['end_time'],
+            );
+            if ($overlap !== null) {
+                throw ValidationException::withMessages([
+                    'start_time' => [
+                        "This schedule overlaps an existing schedule on {$overlap->activity_date->toDateString()} ({$overlap->start_time}–{$overlap->end_time}).",
+                    ],
+                ]);
+            }
+
             $schedule = $activity->schedules()->create($data);
 
             return (new BeachActivityScheduleResource($schedule))->response()->setStatusCode(201);
@@ -74,7 +96,8 @@ class BeachActivityScheduleController extends Controller
     public function update(
         Request $request,
         BeachActivity $beachActivity,
-        BeachActivitySchedule $schedule
+        BeachActivitySchedule $schedule,
+        BeachScheduleReconciler $reconciler,
     ): BeachActivityScheduleResource {
         $this->authorize('update', $schedule);
 
@@ -106,18 +129,21 @@ class BeachActivityScheduleController extends Controller
             ]);
         }
 
-        return DB::transaction(function () use ($beachActivity, $schedule, $data) {
+        $windowChanges = array_key_exists('activity_date', $data)
+            || array_key_exists('start_time', $data)
+            || array_key_exists('end_time', $data);
+
+        return DB::transaction(function () use ($beachActivity, $schedule, $data, $reconciler, $windowChanges, $effectiveStart, $effectiveEnd) {
             $activity = BeachActivity::query()
                 ->whereKey($beachActivity->id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
             $effectiveDate = $data['activity_date'] ?? $schedule->activity_date?->format('Y-m-d');
-            $effectiveStartTime = $data['start_time'] ?? $schedule->start_time;
 
             $duplicate = $activity->schedules()
                 ->whereDate('activity_date', $effectiveDate)
-                ->where('start_time', $effectiveStartTime)
+                ->where('start_time', $effectiveStart)
                 ->where('id', '!=', $schedule->id)
                 ->where('status', '!=', BeachActivitySchedule::STATUS_CANCELLED)
                 ->exists();
@@ -125,6 +151,23 @@ class BeachActivityScheduleController extends Controller
                 throw ValidationException::withMessages([
                     'start_time' => 'A schedule already exists at this date and time.',
                 ]);
+            }
+
+            if ($windowChanges) {
+                $overlap = $reconciler->findOverlappingSchedule(
+                    $activity,
+                    $effectiveDate,
+                    $effectiveStart,
+                    $effectiveEnd,
+                    $schedule->id,
+                );
+                if ($overlap !== null) {
+                    throw ValidationException::withMessages([
+                        'start_time' => [
+                            "This schedule overlaps an existing schedule on {$overlap->activity_date->toDateString()} ({$overlap->start_time}–{$overlap->end_time}).",
+                        ],
+                    ]);
+                }
             }
 
             $schedule->update($data);
