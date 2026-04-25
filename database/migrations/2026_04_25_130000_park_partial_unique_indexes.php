@@ -17,7 +17,7 @@ return new class extends Migration
 {
     public function up(): void
     {
-        DB::statement('CREATE UNIQUE INDEX park_activity_schedule_unique_slot ON park_activity_schedules (park_activity_id, date, start_time) WHERE deleted_at IS NULL');
+        DB::statement("CREATE UNIQUE INDEX park_activity_schedule_unique_slot ON park_activity_schedules (park_activity_id, date, start_time) WHERE deleted_at IS NULL AND status <> 'cancelled'");
         DB::statement("CREATE UNIQUE INDEX park_booking_unique_confirmed ON park_bookings (reservation_id, park_id, date) WHERE status = 'confirmed'");
         DB::statement("CREATE UNIQUE INDEX park_activity_booking_unique_confirmed ON park_activity_bookings (reservation_id, park_activity_schedule_id) WHERE status = 'confirmed'");
     }

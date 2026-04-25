@@ -192,3 +192,82 @@ test('updating an override to narrow hours follows the same hybrid path', functi
     expect($schedule->fresh()->status)->toBe(ParkActivitySchedule::STATUS_CANCELLED);
     expect($booking->fresh()->status)->toBe('cancelled');
 });
+
+test('deleting a broader override that narrows hours back to baseline is rejected by default', function () {
+    // Baseline 09:00–17:00. Override widens to 06:00–22:00 for an event day.
+    // A schedule was authored at 06:30–07:30, valid under the override.
+    // Deleting the override snaps hours back to baseline → 06:30 schedule
+    // now sits outside the open window, must surface as a 409 conflict.
+    $park = overrideCascadePark('09:00:00', '17:00:00');
+    $date = now()->addDays(5)->toDateString();
+
+    $override = $park->hourOverrides()->create([
+        'date' => $date,
+        'open_time' => '06:00:00',
+        'close_time' => '22:00:00',
+    ]);
+    [$activity, $schedule, $booking] = makeBookedSchedule($park, $date, '06:30:00', '07:30:00');
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/hour-overrides/{$override->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('counts.schedules', 1)
+        ->assertJsonPath('counts.bookings', 1)
+        ->assertJsonPath('conflicts.0.schedule_id', $schedule->id);
+
+    expect($override->fresh())->not->toBeNull();
+    expect($schedule->fresh()->status)->toBe(ParkActivitySchedule::STATUS_SCHEDULED);
+    expect($booking->fresh()->status)->toBe('confirmed');
+});
+
+test('deleting a broader override with on_conflict=cascade cancels invalidated schedules', function () {
+    $park = overrideCascadePark('09:00:00', '17:00:00');
+    $date = now()->addDays(5)->toDateString();
+
+    $override = $park->hourOverrides()->create([
+        'date' => $date,
+        'open_time' => '06:00:00',
+        'close_time' => '22:00:00',
+    ]);
+    [$activity, $schedule, $booking] = makeBookedSchedule($park, $date, '06:30:00', '07:30:00');
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/hour-overrides/{$override->id}?on_conflict=cascade")
+        ->assertOk()
+        ->assertJsonPath('cascade.schedules_cancelled', 1)
+        ->assertJsonPath('cascade.bookings_cancelled', 1);
+
+    expect($park->hourOverrides()->count())->toBe(0);
+    expect($schedule->fresh()->status)->toBe(ParkActivitySchedule::STATUS_CANCELLED);
+    expect($schedule->fresh()->notes)->toContain('[cascade]');
+    expect($booking->fresh()->status)->toBe('cancelled');
+});
+
+test('deleting an override on a park with no baseline rejects when the date had live schedules', function () {
+    // No baseline configured. The override is the only thing keeping the
+    // date open — deleting it makes the day not_configured (fail-closed),
+    // so any live schedule on that date is now invalid.
+    $park = ThemePark::factory()->create();
+
+    $date = now()->addDays(5)->toDateString();
+    $override = $park->hourOverrides()->create([
+        'date' => $date,
+        'open_time' => '09:00:00',
+        'close_time' => '17:00:00',
+    ]);
+    [$activity, $schedule, $booking] = makeBookedSchedule($park, $date, '10:00:00', '11:00:00');
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/hour-overrides/{$override->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('counts.schedules', 1);
+
+    expect($override->fresh())->not->toBeNull();
+    expect($schedule->fresh()->status)->toBe(ParkActivitySchedule::STATUS_SCHEDULED);
+});

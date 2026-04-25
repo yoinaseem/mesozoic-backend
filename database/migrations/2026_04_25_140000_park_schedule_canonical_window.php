@@ -27,10 +27,13 @@ return new class extends Migration
 {
     public function up(): void
     {
+        // chunkById, NOT chunk: each iteration mutates end_time, so rows leave
+        // the result set as we process them. chunk()'s OFFSET-based paging
+        // would skip records once the window shifts; chunkById uses
+        // `WHERE id > last_seen` which is immune to that.
         ParkActivitySchedule::withTrashed()
             ->whereNull('end_time')
-            ->orderBy('id')
-            ->chunk(200, function ($schedules) {
+            ->chunkById(200, function ($schedules) {
                 foreach ($schedules as $schedule) {
                     $activity = ParkActivity::withTrashed()->find($schedule->park_activity_id);
 
@@ -81,8 +84,7 @@ return new class extends Migration
         ParkActivitySchedule::withTrashed()
             ->whereNull('end_time')
             ->whereNotNull('start_time')
-            ->orderBy('id')
-            ->chunk(200, function ($schedules) {
+            ->chunkById(200, function ($schedules) {
                 foreach ($schedules as $schedule) {
                     $end = CarbonImmutable::createFromFormat('H:i:s', $schedule->start_time)
                         ->addMinute();
@@ -91,9 +93,15 @@ return new class extends Migration
                 }
             });
 
-        // Last-ditch: rows with no start_time either. Hard-delete (not
-        // soft-delete) since they're pure DB junk.
-        ParkActivitySchedule::withTrashed()->whereNull('end_time')->forceDelete();
+        // Last-ditch: rows with no start_time AND no end_time. Hard-delete
+        // (not soft-delete) since they're pure DB junk. The explicit
+        // start_time NULL check pins this to the documented intent — without
+        // it, any future bug in the loops above would silently delete real
+        // schedule history.
+        ParkActivitySchedule::withTrashed()
+            ->whereNull('end_time')
+            ->whereNull('start_time')
+            ->forceDelete();
 
         Schema::table('park_activity_schedules', function (Blueprint $table) {
             $table->time('end_time')->nullable(false)->change();
@@ -104,7 +112,7 @@ return new class extends Migration
         // partial slot unique to guarantee the live-only WHERE clause is the
         // only enforcement, never a stale full unique.
         DB::statement('DROP INDEX IF EXISTS park_activity_schedule_unique_slot');
-        DB::statement('CREATE UNIQUE INDEX park_activity_schedule_unique_slot ON park_activity_schedules (park_activity_id, date, start_time) WHERE deleted_at IS NULL');
+        DB::statement("CREATE UNIQUE INDEX park_activity_schedule_unique_slot ON park_activity_schedules (park_activity_id, date, start_time) WHERE deleted_at IS NULL AND status <> 'cancelled'");
     }
 
     public function down(): void

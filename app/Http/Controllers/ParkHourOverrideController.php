@@ -162,16 +162,51 @@ class ParkHourOverrideController extends Controller
             ->response();
     }
 
-    public function destroy(ThemePark $themePark, ParkHourOverride $hourOverride): JsonResponse
+    public function destroy(Request $request, ThemePark $themePark, ParkHourOverride $hourOverride, ParkScheduleReconciler $reconciler): JsonResponse
     {
         $this->authorize('delete', $hourOverride);
 
-        // Removing an override widens hours back to the baseline (or removes
-        // them entirely if no baseline exists). Widening never invalidates
-        // existing schedules, so no cascade is needed.
-        $hourOverride->delete();
+        // Deleting an override usually widens hours back to baseline, but two
+        // cases can narrow them and invalidate live schedules:
+        //   - the override was broader than baseline (e.g. event-day extended
+        //     hours), so deletion shrinks the open window
+        //   - no baseline is configured, so deletion makes the day not_configured
+        // Run the same conflict-scan / cascade flow as store/update.
+        $onConflict = $request->input('on_conflict', 'reject');
+        if (! in_array($onConflict, ['reject', 'cascade'], true)) {
+            throw ValidationException::withMessages([
+                'on_conflict' => ['Invalid on_conflict mode.'],
+            ]);
+        }
 
-        return response()->json(null, 204);
+        $date = $hourOverride->date->toDateString();
+
+        try {
+            $cascadeResult = DB::transaction(function () use ($themePark, $hourOverride, $reconciler, $onConflict, $date) {
+                $hourOverride->delete();
+
+                $conflicts = $reconciler->findScheduleConflicts(
+                    $themePark,
+                    CarbonImmutable::parse($date),
+                    CarbonImmutable::parse($date),
+                );
+
+                return $this->applyOrThrow(
+                    $reconciler,
+                    $conflicts,
+                    $onConflict,
+                    "override removed for {$date}",
+                );
+            });
+        } catch (HoursCascadeConflictException $e) {
+            return response()->json($e->payload(), 409);
+        }
+
+        if ($cascadeResult['schedules_cancelled'] === 0 && $cascadeResult['bookings_cancelled'] === 0) {
+            return response()->json(null, 204);
+        }
+
+        return response()->json(['cascade' => $cascadeResult]);
     }
 
     /**

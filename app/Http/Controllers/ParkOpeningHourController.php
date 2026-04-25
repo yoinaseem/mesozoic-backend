@@ -22,11 +22,12 @@ class ParkOpeningHourController extends Controller
     use AuthorizesRequests;
 
     /**
-     * Window over which baseline-edit conflicts are checked. Matches the
-     * read-side cap on the effective-hours endpoint so the cascade scope
-     * lines up with what callers can actually see.
+     * Window over which baseline-edit conflicts are checked. The
+     * effective-hours endpoint validates `diffInDays + 1 <= 366`, which means
+     * its furthest visible date is `today + 365`. Match that horizon exactly
+     * so the cascade never touches schedules clients can't inspect.
      */
-    private const CASCADE_RANGE_DAYS = 366;
+    private const CASCADE_RANGE_DAYS = 365;
 
     public function index(ThemePark $themePark): AnonymousResourceCollection
     {

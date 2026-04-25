@@ -525,3 +525,32 @@ test('overnight schedule extending past overnight close is rejected', function (
         ->assertUnprocessable()
         ->assertJsonValidationErrors('start_time');
 });
+
+test('a new schedule may be created at the same slot as a cancelled one', function () {
+    // Cancelled schedules are runtime-non-live (overlap detection skips them).
+    // The slot partial unique index must align: re-creating at the same
+    // (park_activity_id, date, start_time) after a cancel should succeed,
+    // not bubble a DB unique-violation as a 500.
+    $park = scheduleParkWithHours();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $cancelled = $activity->schedules()->create([
+        'date' => '2026-06-01',
+        'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
+        'status' => ParkActivitySchedule::STATUS_CANCELLED,
+    ]);
+
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
+            'status' => ParkActivitySchedule::STATUS_SCHEDULED,
+        ])
+        ->assertCreated();
+
+    expect($activity->schedules()->where('start_time', '09:00:00')->count())->toBe(2);
+    expect($cancelled->fresh()->status)->toBe(ParkActivitySchedule::STATUS_CANCELLED);
+});
