@@ -7,6 +7,26 @@ use App\Models\User;
 
 use function Pest\Laravel\getJson;
 
+/**
+ * Helper: park with weekly opening hours covering the 09:00–23:30 window
+ * (overnight tests override). PR 4's reconciler rejects schedules whose
+ * window doesn't fit effective hours, so most tests need a non-empty
+ * baseline.
+ */
+function scheduleParkWithHours(string $open = '09:00:00', string $close = '23:30:00'): ThemePark
+{
+    $park = ThemePark::factory()->create();
+    foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $day) {
+        $park->openingHours()->create([
+            'day' => $day,
+            'open_time' => $open,
+            'close_time' => $close,
+        ]);
+    }
+
+    return $park;
+}
+
 test('public can list park activity schedules without auth', function () {
     $park = ThemePark::factory()->create();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
@@ -61,7 +81,7 @@ test('customer cannot create a park activity schedule', function () {
 });
 
 test('park-manager can create a park activity schedule', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $manager = User::factory()->parkManager()->create();
 
@@ -77,7 +97,7 @@ test('park-manager can create a park activity schedule', function () {
 });
 
 test('superadmin can create a park activity schedule', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $admin = User::factory()->superadmin()->create();
 
@@ -93,7 +113,7 @@ test('superadmin can create a park activity schedule', function () {
 });
 
 test('park-manager can update a park activity schedule', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
@@ -184,7 +204,7 @@ test('overnight end_time stored verbatim and emitted as-is', function () {
 });
 
 test('explicit end_time is stored as posted', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create([
         'park_id' => $park->id,
         'duration' => 45,
@@ -233,7 +253,7 @@ test('create rejects end_time equal to start_time', function () {
 });
 
 test('create allows overnight end_time earlier than start_time', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours('22:00:00', '03:00:00');
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $manager = User::factory()->parkManager()->create();
 
@@ -247,8 +267,8 @@ test('create allows overnight end_time earlier than start_time', function () {
         ->assertJsonPath('data.end_time', '02:00:00');
 });
 
-test('duplicate date+start_time is rejected', function () {
-    $park = ThemePark::factory()->create();
+test('duplicate date+start_time is rejected via overlap detection', function () {
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $activity->schedules()->create([
         'date' => '2026-06-01',
@@ -317,7 +337,7 @@ test('archive is blocked when a schedule has upcoming confirmed bookings', funct
 });
 
 test('schedule slot can be reused after the original is archived', function () {
-    $park = ThemePark::factory()->create();
+    $park = scheduleParkWithHours();
     $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
     $old = $activity->schedules()->create([
         'date' => '2026-08-15',
@@ -336,4 +356,172 @@ test('schedule slot can be reused after the original is archived', function () {
             'end_time' => '15:00:00',
         ])
         ->assertCreated();
+});
+
+// PR 4 — fits-in-hours, overlap, past-date
+
+test('schedule starting before park open is rejected', function () {
+    $park = scheduleParkWithHours('10:00:00', '18:00:00');
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '09:00:00',
+            'end_time' => '11:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
+});
+
+test('schedule ending after park close is rejected', function () {
+    $park = scheduleParkWithHours('09:00:00', '17:00:00');
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '16:00:00',
+            'end_time' => '18:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
+});
+
+test('schedule on a closed-override date is rejected', function () {
+    $park = scheduleParkWithHours();
+    $park->hourOverrides()->create([
+        'date' => '2026-06-01',
+        'open_time' => null,
+        'close_time' => null,
+    ]);
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('date');
+});
+
+test('schedule on a not_configured date is rejected', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('date');
+});
+
+test('schedule overlap with another scheduled row is rejected', function () {
+    $park = scheduleParkWithHours();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $activity->schedules()->create([
+        'date' => '2026-06-01',
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '10:30:00',
+            'end_time' => '11:30:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
+});
+
+test('schedule on a past date is rejected on create', function () {
+    $park = scheduleParkWithHours();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => now()->subDay()->toDateString(),
+            'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('date');
+});
+
+test('moving a schedule to a past date via update is rejected', function () {
+    $park = scheduleParkWithHours();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date' => now()->addDays(5)->toDateString(),
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules/{$schedule->id}", [
+            'date' => now()->subDays(2)->toDateString(),
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('date');
+});
+
+test('notes-only update on a past schedule succeeds', function () {
+    $park = scheduleParkWithHours();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date' => now()->subDays(5)->toDateString(),
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules/{$schedule->id}", [
+            'notes' => 'Cleanup note',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.notes', 'Cleanup note');
+});
+
+test('overnight schedule inside overnight hours is accepted', function () {
+    $park = scheduleParkWithHours('22:00:00', '02:00:00');
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '23:00:00',
+            'end_time' => '01:00:00',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('data.end_time', '01:00:00');
+});
+
+test('overnight schedule extending past overnight close is rejected', function () {
+    $park = scheduleParkWithHours('22:00:00', '02:00:00');
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '23:00:00',
+            'end_time' => '03:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('start_time');
 });

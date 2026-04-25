@@ -7,6 +7,7 @@ use App\Models\ParkActivity;
 use App\Models\ParkActivityBooking;
 use App\Models\ParkActivitySchedule;
 use App\Models\ThemePark;
+use App\Services\ParkScheduleReconciler;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -37,12 +38,16 @@ class ParkActivityScheduleController extends Controller
         return new ParkActivityScheduleResource($schedule);
     }
 
-    public function store(Request $request, ThemePark $themePark, ParkActivity $parkActivity): JsonResponse
-    {
+    public function store(
+        Request $request,
+        ThemePark $themePark,
+        ParkActivity $parkActivity,
+        ParkScheduleReconciler $reconciler,
+    ): JsonResponse {
         $this->authorize('create', ParkActivitySchedule::class);
 
         $data = $request->validate([
-            'date' => ['required', 'date'],
+            'date' => ['required', 'date', 'after_or_equal:today'],
             'start_time' => ['required', 'date_format:H:i:s'],
             'end_time' => ['required', 'date_format:H:i:s', 'different:start_time'],
             'status' => ['sometimes', Rule::in([
@@ -53,19 +58,30 @@ class ParkActivityScheduleController extends Controller
             'notes' => ['nullable', 'string'],
         ]);
 
-        return DB::transaction(function () use ($parkActivity, $data) {
+        return DB::transaction(function () use ($themePark, $parkActivity, $data, $reconciler) {
             $activity = ParkActivity::query()
                 ->whereKey($parkActivity->id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $duplicate = $activity->schedules()
-                ->whereDate('date', $data['date'])
-                ->where('start_time', $data['start_time'])
-                ->exists();
-            if ($duplicate) {
+            $reconciler->validateWindow(
+                $themePark,
+                $data['date'],
+                $data['start_time'],
+                $data['end_time'],
+            );
+
+            $overlap = $reconciler->findOverlappingSchedule(
+                $activity,
+                $data['date'],
+                $data['start_time'],
+                $data['end_time'],
+            );
+            if ($overlap !== null) {
                 throw ValidationException::withMessages([
-                    'start_time' => 'A schedule already exists at this date and time.',
+                    'start_time' => [
+                        "This schedule overlaps an existing schedule on {$overlap->date->toDateString()} ({$overlap->start_time}–{$overlap->end_time}).",
+                    ],
                 ]);
             }
 
@@ -80,7 +96,8 @@ class ParkActivityScheduleController extends Controller
         Request $request,
         ThemePark $themePark,
         ParkActivity $parkActivity,
-        ParkActivitySchedule $schedule
+        ParkActivitySchedule $schedule,
+        ParkScheduleReconciler $reconciler,
     ): ParkActivityScheduleResource {
         $this->authorize('update', $schedule);
 
@@ -96,32 +113,49 @@ class ParkActivityScheduleController extends Controller
             'notes' => ['sometimes', 'nullable', 'string'],
         ]);
 
+        if (array_key_exists('date', $data) && $data['date'] < today()->toDateString()) {
+            throw ValidationException::withMessages([
+                'date' => ['Cannot move a schedule to a past date.'],
+            ]);
+        }
+
         $effectiveStart = array_key_exists('start_time', $data) ? $data['start_time'] : $schedule->start_time;
         $effectiveEnd = array_key_exists('end_time', $data) ? $data['end_time'] : $schedule->end_time;
-        if ($effectiveEnd !== null && $effectiveEnd === $effectiveStart) {
+        if ($effectiveEnd === $effectiveStart) {
             throw ValidationException::withMessages([
                 'end_time' => 'The end time must be different from the start time.',
             ]);
         }
 
-        return DB::transaction(function () use ($parkActivity, $schedule, $data) {
+        $windowChanges = array_key_exists('date', $data)
+            || array_key_exists('start_time', $data)
+            || array_key_exists('end_time', $data);
+
+        return DB::transaction(function () use ($themePark, $parkActivity, $schedule, $data, $reconciler, $windowChanges, $effectiveStart, $effectiveEnd) {
             $activity = ParkActivity::query()
                 ->whereKey($parkActivity->id)
                 ->lockForUpdate()
                 ->firstOrFail();
 
-            $effectiveDate = $data['date'] ?? $schedule->date?->format('Y-m-d');
-            $effectiveStartTime = $data['start_time'] ?? $schedule->start_time;
+            if ($windowChanges) {
+                $effectiveDate = $data['date'] ?? $schedule->date?->format('Y-m-d');
 
-            $duplicate = $activity->schedules()
-                ->whereDate('date', $effectiveDate)
-                ->where('start_time', $effectiveStartTime)
-                ->where('id', '!=', $schedule->id)
-                ->exists();
-            if ($duplicate) {
-                throw ValidationException::withMessages([
-                    'start_time' => 'A schedule already exists at this date and time.',
-                ]);
+                $reconciler->validateWindow($themePark, $effectiveDate, $effectiveStart, $effectiveEnd);
+
+                $overlap = $reconciler->findOverlappingSchedule(
+                    $activity,
+                    $effectiveDate,
+                    $effectiveStart,
+                    $effectiveEnd,
+                    $schedule->id,
+                );
+                if ($overlap !== null) {
+                    throw ValidationException::withMessages([
+                        'start_time' => [
+                            "This schedule overlaps an existing schedule on {$overlap->date->toDateString()} ({$overlap->start_time}–{$overlap->end_time}).",
+                        ],
+                    ]);
+                }
             }
 
             $schedule->update($data);

@@ -9,6 +9,7 @@ use App\Models\ParkActivitySchedule;
 use App\Models\ParkBooking;
 use App\Models\Reservation;
 use App\Models\ThemePark;
+use App\Services\ParkScheduleReconciler;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -77,7 +78,7 @@ class ParkActivityBookingController extends Controller
         return new ParkActivityBookingResource($parkActivityBooking);
     }
 
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, ParkScheduleReconciler $reconciler): JsonResponse
     {
         $this->authorize('create', ParkActivityBooking::class);
         $user = $request->user();
@@ -91,7 +92,7 @@ class ParkActivityBookingController extends Controller
         $reservation = Reservation::findOrFail($data['reservation_id']);
         $this->assertReservationOwnedByCaller($user, $reservation);
 
-        $booking = DB::transaction(function () use ($reservation, $data) {
+        $booking = DB::transaction(function () use ($reservation, $data, $reconciler) {
             $schedule = ParkActivitySchedule::query()
                 ->whereKey($data['park_activity_schedule_id'])
                 ->with('parkActivity.themePark')
@@ -106,6 +107,7 @@ class ParkActivityBookingController extends Controller
 
             $this->assertScheduleBookable($schedule);
             $this->assertParkOpenOn($park, $scheduleDate);
+            $this->assertScheduleStillFitsHours($schedule, $park, $reconciler);
             $this->assertReservationActiveOn($reservation, $scheduleDate, $data['guests']);
             $this->assertHoldsDayPass($reservation, $park, $scheduleDate, $data['guests']);
             $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
@@ -233,6 +235,31 @@ class ParkActivityBookingController extends Controller
         if (! $park->isOpenOn($date)) {
             throw ValidationException::withMessages([
                 'park_activity_schedule_id' => ['The park is not open on this date.'],
+            ]);
+        }
+    }
+
+    /**
+     * Defense-in-depth: re-validate the schedule's stored window against
+     * effective hours. Catches stale schedules that slipped through (e.g. a
+     * cascade was bypassed by a force-unarchive path or hours changed without
+     * the cascade running).
+     */
+    private function assertScheduleStillFitsHours(
+        ParkActivitySchedule $schedule,
+        ThemePark $park,
+        ParkScheduleReconciler $reconciler,
+    ): void {
+        try {
+            $reconciler->validateWindow(
+                $park,
+                $schedule->date->toDateString(),
+                $schedule->start_time,
+                $schedule->end_time,
+            );
+        } catch (ValidationException) {
+            throw ValidationException::withMessages([
+                'park_activity_schedule_id' => ["This schedule no longer fits the park's opening hours."],
             ]);
         }
     }
