@@ -573,3 +573,122 @@ test('date-change on update rejects conflicts with another confirmed booking', f
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['room_type_id']);
 });
+
+// ---------------------------------------------------------------------------
+// Index filters
+// ---------------------------------------------------------------------------
+
+function superadminUser(): User
+{
+    $u = User::factory()->create();
+    $u->assignRole('superadmin');
+
+    return $u;
+}
+
+test('index filters by room_type_id', function () {
+    [, $typeA] = hotelWithType();
+    [, $typeB] = hotelWithType();
+    $resA = Reservation::create(['user_id' => customerUser()->id]);
+    $resB = Reservation::create(['user_id' => customerUser()->id]);
+    $keep = confirmedBooking($resA, $typeA, '2026-06-01', '2026-06-03');
+    confirmedBooking($resB, $typeB, '2026-06-01', '2026-06-03');
+
+    $response = $this->actingAs(superadminUser())
+        ->getJson("/api/room-bookings?room_type_id={$typeA->id}")
+        ->assertOk();
+
+    expect($response->json('data'))->toHaveCount(1);
+    expect($response->json('data.0.id'))->toBe($keep->id);
+});
+
+test('index filters by check_in_from (inclusive)', function () {
+    [, $type] = hotelWithType();
+    $res = Reservation::create(['user_id' => customerUser()->id]);
+    $early = confirmedBooking($res, $type, '2026-06-01', '2026-06-03');
+    $later = confirmedBooking($res, $type, '2026-06-10', '2026-06-12');
+
+    $response = $this->actingAs(superadminUser())
+        ->getJson('/api/room-bookings?check_in_from=2026-06-10')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($later->id);
+    expect($ids)->not->toContain($early->id);
+});
+
+test('index filters by check_in_to (inclusive)', function () {
+    [, $type] = hotelWithType();
+    $res = Reservation::create(['user_id' => customerUser()->id]);
+    $early = confirmedBooking($res, $type, '2026-06-01', '2026-06-03');
+    $later = confirmedBooking($res, $type, '2026-06-10', '2026-06-12');
+
+    $response = $this->actingAs(superadminUser())
+        ->getJson('/api/room-bookings?check_in_to=2026-06-01')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($early->id);
+    expect($ids)->not->toContain($later->id);
+});
+
+test('index applies check_in_from and check_in_to together as a range', function () {
+    [, $type] = hotelWithType();
+    $res = Reservation::create(['user_id' => customerUser()->id]);
+    $before = confirmedBooking($res, $type, '2026-06-01', '2026-06-03');
+    $inside = confirmedBooking($res, $type, '2026-06-10', '2026-06-12');
+    $after  = confirmedBooking($res, $type, '2026-06-20', '2026-06-22');
+
+    $response = $this->actingAs(superadminUser())
+        ->getJson('/api/room-bookings?check_in_from=2026-06-05&check_in_to=2026-06-15')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($inside->id);
+    expect($ids)->not->toContain($before->id);
+    expect($ids)->not->toContain($after->id);
+});
+
+test('check_in_to equal to check_in_from is allowed (inclusive)', function () {
+    [, $type] = hotelWithType();
+    $res = Reservation::create(['user_id' => customerUser()->id]);
+    $hit = confirmedBooking($res, $type, '2026-06-10', '2026-06-12');
+
+    $response = $this->actingAs(superadminUser())
+        ->getJson('/api/room-bookings?check_in_from=2026-06-10&check_in_to=2026-06-10')
+        ->assertOk();
+
+    expect(collect($response->json('data'))->pluck('id')->all())->toContain($hit->id);
+});
+
+test('check_in_to before check_in_from returns 422 on check_in_to', function () {
+    $this->actingAs(superadminUser())
+        ->getJson('/api/room-bookings?check_in_from=2026-06-10&check_in_to=2026-06-05')
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['check_in_to']);
+});
+
+test('filters compose — status + hotel_id + room_type_id + date range', function () {
+    [$hotelA, $typeA] = hotelWithType();
+    [$hotelB, $typeB] = hotelWithType();
+    $res = Reservation::create(['user_id' => customerUser()->id]);
+
+    $keep        = confirmedBooking($res, $typeA, '2026-06-10', '2026-06-12');
+    $wrongHotel  = confirmedBooking($res, $typeB, '2026-06-10', '2026-06-12');
+    $wrongStatus = confirmedBooking($res, $typeA, '2026-06-10', '2026-06-12', status: 'cancelled');
+    $outOfRange  = confirmedBooking($res, $typeA, '2026-06-25', '2026-06-27');
+
+    $url = sprintf(
+        '/api/room-bookings?status=confirmed&hotel_id=%d&room_type_id=%d&check_in_from=2026-06-01&check_in_to=2026-06-15',
+        $hotelA->id,
+        $typeA->id,
+    );
+
+    $response = $this->actingAs(superadminUser())->getJson($url)->assertOk();
+    $ids = collect($response->json('data'))->pluck('id')->all();
+
+    expect($ids)->toContain($keep->id);
+    expect($ids)->not->toContain($wrongHotel->id);
+    expect($ids)->not->toContain($wrongStatus->id);
+    expect($ids)->not->toContain($outOfRange->id);
+});

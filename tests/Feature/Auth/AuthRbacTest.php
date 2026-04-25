@@ -1,5 +1,6 @@
 <?php
 
+use App\Models\Hotel;
 use App\Models\User;
 
 use function Pest\Laravel\getJson;
@@ -50,4 +51,87 @@ test('me returns roles and permissions for the authenticated user', function () 
 
 test('me requires authentication', function () {
     getJson('/api/auth/me')->assertUnauthorized();
+});
+
+// ---------------------------------------------------------------------------
+// GET /auth/me/hotels
+// ---------------------------------------------------------------------------
+
+test('me/hotels requires authentication', function () {
+    getJson('/api/auth/me/hotels')->assertUnauthorized();
+});
+
+test('customer me/hotels returns empty data', function () {
+    $u = User::factory()->create();
+    $u->assignRole('customer');
+    Hotel::factory()->create();
+
+    $this->actingAs($u)
+        ->getJson('/api/auth/me/hotels')
+        ->assertOk()
+        ->assertExactJson(['data' => []]);
+});
+
+test('hotel-manager me/hotels returns only assigned hotels', function () {
+    $assigned   = Hotel::factory()->create(['name' => 'Assigned One']);
+    $assigned2  = Hotel::factory()->create(['name' => 'Assigned Two']);
+    $unassigned = Hotel::factory()->create(['name' => 'Other Hotel']);
+
+    $manager = User::factory()->create();
+    $manager->assignRole('hotel-manager');
+    $manager->managedHotels()->attach([$assigned->id, $assigned2->id]);
+
+    $response = $this->actingAs($manager)
+        ->getJson('/api/auth/me/hotels')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($assigned->id);
+    expect($ids)->toContain($assigned2->id);
+    expect($ids)->not->toContain($unassigned->id);
+    expect($response->json('data.0'))->toHaveKeys(['id', 'name']);
+});
+
+test('hotel-manager with no assignments gets an empty list', function () {
+    Hotel::factory()->create();
+    $manager = User::factory()->create();
+    $manager->assignRole('hotel-manager');
+
+    $this->actingAs($manager)
+        ->getJson('/api/auth/me/hotels')
+        ->assertOk()
+        ->assertExactJson(['data' => []]);
+});
+
+test('superadmin me/hotels returns every live hotel', function () {
+    $h1 = Hotel::factory()->create(['name' => 'Alpha']);
+    $h2 = Hotel::factory()->create(['name' => 'Bravo']);
+    $h3 = Hotel::factory()->create(['name' => 'Charlie']);
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/auth/me/hotels')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($h1->id, $h2->id, $h3->id);
+});
+
+test('archived hotels are excluded from superadmin me/hotels', function () {
+    $live     = Hotel::factory()->create(['name' => 'Live']);
+    $archived = Hotel::factory()->create(['name' => 'Archived']);
+    $archived->delete();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $response = $this->actingAs($admin)
+        ->getJson('/api/auth/me/hotels')
+        ->assertOk();
+
+    $ids = collect($response->json('data'))->pluck('id')->all();
+    expect($ids)->toContain($live->id);
+    expect($ids)->not->toContain($archived->id);
 });

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Auth;
 
 use App\Http\Controllers\Controller;
 use App\Http\Resources\UserResource;
+use App\Models\Hotel;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -61,6 +62,34 @@ class AuthController extends Controller
     {
         return response()->json([
             'user' => new UserResource($request->user()),
+        ]);
+    }
+
+    /**
+     * Hotels the caller has admin access to — used by the frontend to populate
+     * scoped dropdowns (e.g. the Hotel filter on the bookings page). Superadmin
+     * sees every live hotel; hotel-manager sees their pivot assignments;
+     * anyone else gets an empty list.
+     */
+    public function meHotels(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        if ($user->hasRole('superadmin')) {
+            $hotels = Hotel::query()->orderBy('name')->get(['id', 'name']);
+        } elseif ($user->hasRole('hotel-manager')) {
+            $hotels = $user->managedHotels()
+                ->orderBy('name')
+                ->get(['hotels.id', 'hotels.name']);
+        } else {
+            $hotels = collect();
+        }
+
+        return response()->json([
+            'data' => $hotels->map(fn ($h) => [
+                'id'   => $h->id,
+                'name' => $h->name,
+            ])->values(),
         ]);
     }
 }

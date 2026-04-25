@@ -25,6 +25,15 @@ class RoomBookingController extends Controller
         $this->authorize('viewAny', RoomBooking::class);
         $user = $request->user();
 
+        $request->validate([
+            'status'         => ['sometimes', Rule::in(['confirmed', 'cancelled'])],
+            'hotel_id'       => ['sometimes', 'integer'],
+            'room_type_id'   => ['sometimes', 'integer'],
+            'reservation_id' => ['sometimes', 'integer'],
+            'check_in_from'  => ['sometimes', 'date'],
+            'check_in_to'    => ['sometimes', 'date', 'after_or_equal:check_in_from'],
+        ]);
+
         // Historical bookings can reference archived hotels/room-types/rooms,
         // so eager-load with trashed to keep those rows fully rendered.
         $query = RoomBooking::query()->with([
@@ -49,8 +58,17 @@ class RoomBookingController extends Controller
         if ($hotelId = $request->query('hotel_id')) {
             $query->where('hotel_id', $hotelId);
         }
+        if ($roomTypeId = $request->query('room_type_id')) {
+            $query->where('room_type_id', $roomTypeId);
+        }
         if ($reservationId = $request->query('reservation_id')) {
             $query->where('reservation_id', $reservationId);
+        }
+        if ($checkInFrom = $request->query('check_in_from')) {
+            $query->whereDate('check_in_date', '>=', $checkInFrom);
+        }
+        if ($checkInTo = $request->query('check_in_to')) {
+            $query->whereDate('check_in_date', '<=', $checkInTo);
         }
 
         return RoomBookingResource::collection(
