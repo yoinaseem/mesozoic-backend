@@ -150,25 +150,61 @@ class ParkScheduleReconciler
     }
 
     /**
-     * Bulk-cancel the conflicting schedules and their confirmed bookings in
-     * one transaction. Appends `[cascade] $reason` to schedule notes for
-     * audit. Returns counts of what was actually flipped.
+     * Apply a hours-change cascade to the conflicting schedules.
+     *
+     * Behavior splits by activity flavour:
+     *   - timed activity: schedule + its confirmed bookings get cancelled
+     *     (the schedule's window can't be silently shifted — it was authored
+     *     against the old hours).
+     *   - all-day activity, day still open: re-sync the schedule's window to
+     *     the new effective hours; bookings stay confirmed (the day-pass
+     *     semantics are preserved, just with narrower hours).
+     *   - all-day activity, day now closed: cancel like timed.
+     *
+     * All writes happen inside one transaction. Schedule notes get a
+     * `[cascade] $reason` audit line on cancel.
      *
      * @param  Collection<int, array{schedule: ParkActivitySchedule, confirmed_bookings: int}>  $conflicts
-     * @return array{schedules_cancelled: int, bookings_cancelled: int}
+     * @return array{schedules_cancelled: int, bookings_cancelled: int, schedules_resynced: int}
      */
     public function cascadeCancel(Collection $conflicts, string $reason): array
     {
         if ($conflicts->isEmpty()) {
-            return ['schedules_cancelled' => 0, 'bookings_cancelled' => 0];
+            return ['schedules_cancelled' => 0, 'bookings_cancelled' => 0, 'schedules_resynced' => 0];
         }
 
         return DB::transaction(function () use ($conflicts, $reason) {
-            $scheduleIds = $conflicts->pluck('schedule.id')->all();
             $now = now();
+            $cancelTargets = collect();
+            $resyncTargets = collect();
 
-            $bookingsCancelled = ParkActivityBooking::query()
-                ->whereIn('park_activity_schedule_id', $scheduleIds)
+            foreach ($conflicts as $conflict) {
+                /** @var ParkActivitySchedule $schedule */
+                $schedule = $conflict['schedule'];
+                $activity = $schedule->parkActivity;
+
+                if ($activity !== null && $activity->is_all_day) {
+                    $park = $activity->themePark
+                        ?? ThemePark::withTrashed()->find($activity->park_id);
+                    $hours = $park?->effectiveHoursOn($schedule->date);
+
+                    if ($hours !== null && $hours['status'] === 'open') {
+                        $resyncTargets->push([
+                            'schedule' => $schedule,
+                            'open' => $hours['open_time'],
+                            'close' => $hours['close_time'],
+                        ]);
+                        continue;
+                    }
+                }
+
+                $cancelTargets->push($schedule);
+            }
+
+            $cancelIds = $cancelTargets->pluck('id')->all();
+
+            $bookingsCancelled = empty($cancelIds) ? 0 : ParkActivityBooking::query()
+                ->whereIn('park_activity_schedule_id', $cancelIds)
                 ->where('status', 'confirmed')
                 ->update([
                     'status' => ParkActivityBooking::STATUS_CANCELLED,
@@ -177,10 +213,7 @@ class ParkScheduleReconciler
                 ]);
 
             $schedulesCancelled = 0;
-            foreach ($conflicts as $conflict) {
-                /** @var ParkActivitySchedule $schedule */
-                $schedule = $conflict['schedule'];
-
+            foreach ($cancelTargets as $schedule) {
                 if ($schedule->status === ParkActivitySchedule::STATUS_CANCELLED) {
                     continue;
                 }
@@ -198,11 +231,67 @@ class ParkScheduleReconciler
                 $schedulesCancelled++;
             }
 
+            $schedulesResynced = 0;
+            foreach ($resyncTargets as $target) {
+                /** @var ParkActivitySchedule $schedule */
+                $schedule = $target['schedule'];
+                $schedule->update([
+                    'start_time' => $target['open'],
+                    'end_time' => $target['close'],
+                ]);
+                $schedulesResynced++;
+            }
+
             return [
                 'schedules_cancelled' => $schedulesCancelled,
                 'bookings_cancelled' => $bookingsCancelled,
+                'schedules_resynced' => $schedulesResynced,
             ];
         });
+    }
+
+    /**
+     * Find or create the per-date schedule row for an all-day activity. Used
+     * by the booking flow so callers can target an all-day activity by
+     * `(activity, date)` without first authoring a schedule. Window mirrors
+     * effectiveHoursOn at materialization time. Throws if the date is closed
+     * or not_configured.
+     */
+    public function materializeAllDaySchedule(ParkActivity $activity, string $date): ParkActivitySchedule
+    {
+        if (! $activity->is_all_day) {
+            throw new \LogicException('materializeAllDaySchedule called on a non-all-day activity.');
+        }
+
+        $park = $activity->themePark ?? ThemePark::withTrashed()->find($activity->park_id);
+        if ($park === null) {
+            throw ValidationException::withMessages([
+                'park_activity_id' => ['Parent theme park is missing.'],
+            ]);
+        }
+
+        $hours = $park->effectiveHoursOn($date);
+        if ($hours['status'] !== 'open') {
+            throw ValidationException::withMessages([
+                'date' => ['The park is not open on this date.'],
+            ]);
+        }
+
+        $existing = $activity->schedules()
+            ->whereDate('date', $date)
+            ->where('status', '!=', ParkActivitySchedule::STATUS_CANCELLED)
+            ->first();
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        return $activity->schedules()->create([
+            'date' => $date,
+            'start_time' => $hours['open_time'],
+            'end_time' => $hours['close_time'],
+            'status' => ParkActivitySchedule::STATUS_SCHEDULED,
+        ]);
     }
 
     /**

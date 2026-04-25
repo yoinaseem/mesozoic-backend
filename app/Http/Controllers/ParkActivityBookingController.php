@@ -85,7 +85,17 @@ class ParkActivityBookingController extends Controller
 
         $data = $request->validate([
             'reservation_id' => ['required', Rule::exists('reservations', 'id')],
-            'park_activity_schedule_id' => ['required', Rule::exists('park_activity_schedules', 'id')],
+            'park_activity_schedule_id' => [
+                'required_without:park_activity_id',
+                'nullable',
+                Rule::exists('park_activity_schedules', 'id'),
+            ],
+            'park_activity_id' => [
+                'required_without:park_activity_schedule_id',
+                'nullable',
+                Rule::exists('park_activities', 'id'),
+            ],
+            'date' => ['required_with:park_activity_id', 'nullable', 'date'],
             'guests' => ['required', 'integer', 'min:1'],
         ]);
 
@@ -93,11 +103,7 @@ class ParkActivityBookingController extends Controller
         $this->assertReservationOwnedByCaller($user, $reservation);
 
         $booking = DB::transaction(function () use ($reservation, $data, $reconciler) {
-            $schedule = ParkActivitySchedule::query()
-                ->whereKey($data['park_activity_schedule_id'])
-                ->with('parkActivity.themePark')
-                ->lockForUpdate()
-                ->firstOrFail();
+            $schedule = $this->resolveSchedule($data, $reconciler);
 
             /** @var ParkActivity $activity */
             $activity = $schedule->parkActivity;
@@ -209,6 +215,43 @@ class ParkActivityBookingController extends Controller
                 'reservation_id' => ['This reservation does not belong to you.'],
             ]);
         }
+    }
+
+    /**
+     * Resolve the target schedule for booking. Two payload shapes:
+     *   - park_activity_schedule_id: existing timed-flow path; lookup + lock.
+     *   - park_activity_id + date: all-day flow; lock the activity, verify it
+     *     is is_all_day, then materialize-or-fetch the per-date schedule via
+     *     the reconciler.
+     */
+    private function resolveSchedule(array $data, ParkScheduleReconciler $reconciler): ParkActivitySchedule
+    {
+        if (! empty($data['park_activity_schedule_id'])) {
+            return ParkActivitySchedule::query()
+                ->whereKey($data['park_activity_schedule_id'])
+                ->with('parkActivity.themePark')
+                ->lockForUpdate()
+                ->firstOrFail();
+        }
+
+        $activity = ParkActivity::query()
+            ->whereKey($data['park_activity_id'])
+            ->with('themePark')
+            ->lockForUpdate()
+            ->firstOrFail();
+
+        if (! $activity->is_all_day) {
+            throw ValidationException::withMessages([
+                'park_activity_id' => [
+                    'This activity is not all-day. Pass park_activity_schedule_id instead.',
+                ],
+            ]);
+        }
+
+        $schedule = $reconciler->materializeAllDaySchedule($activity, $data['date']);
+        $schedule->setRelation('parkActivity', $activity);
+
+        return $schedule;
     }
 
     /**

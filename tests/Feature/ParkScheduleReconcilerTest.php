@@ -339,5 +339,9 @@ test('cascadeCancel preserves existing notes when appending audit reason', funct
 
 test('cascadeCancel returns zeros for empty input', function () {
     $result = reconciler()->cascadeCancel(collect(), 'noop');
-    expect($result)->toBe(['schedules_cancelled' => 0, 'bookings_cancelled' => 0]);
+    expect($result)->toBe([
+        'schedules_cancelled' => 0,
+        'bookings_cancelled' => 0,
+        'schedules_resynced' => 0,
+    ]);
 });

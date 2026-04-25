@@ -46,6 +46,14 @@ class ParkActivityScheduleController extends Controller
     ): JsonResponse {
         $this->authorize('create', ParkActivitySchedule::class);
 
+        if ($parkActivity->is_all_day) {
+            throw ValidationException::withMessages([
+                'park_activity_id' => [
+                    'Schedules for all-day activities are materialized automatically on first booking. Manual creation is not allowed.',
+                ],
+            ]);
+        }
+
         $data = $request->validate([
             'date' => ['required', 'date', 'after_or_equal:today'],
             'start_time' => ['required', 'date_format:H:i:s'],
