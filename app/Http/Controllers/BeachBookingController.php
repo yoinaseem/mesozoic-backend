@@ -10,6 +10,7 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -78,25 +79,32 @@ class BeachBookingController extends Controller
         ]);
 
         $reservation = Reservation::findOrFail($data['reservation_id']);
-        $schedule = BeachActivitySchedule::with('activity')->findOrFail($data['beach_activity_schedule_id']);
-
         $this->assertReservationOwnedByCaller($user, $reservation);
-        $this->assertScheduleBookable($schedule);
-        $this->assertReservationActiveOn($reservation, $schedule->activity_date->toDateString(), $data['guests']);
-        $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
-        $this->assertScheduleCapacityAvailable($schedule, $data['guests']);
 
-        $pricePerGuest = $schedule->activity->price;
-        $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+        $booking = DB::transaction(function () use ($reservation, $data) {
+            $schedule = BeachActivitySchedule::query()
+                ->whereKey($data['beach_activity_schedule_id'])
+                ->with('activity')
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $booking = BeachBooking::create([
-            'reservation_id' => $reservation->id,
-            'beach_activity_schedule_id' => $schedule->id,
-            'guests' => $data['guests'],
-            'status' => 'confirmed',
-            'price_per_guest' => $pricePerGuest,
-            'total_price' => $totalPrice,
-        ]);
+            $this->assertScheduleBookable($schedule);
+            $this->assertReservationActiveOn($reservation, $schedule->activity_date->toDateString(), $data['guests']);
+            $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
+            $this->assertScheduleCapacityAvailable($schedule, $data['guests']);
+
+            $pricePerGuest = $schedule->activity->price;
+            $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+
+            return BeachBooking::create([
+                'reservation_id' => $reservation->id,
+                'beach_activity_schedule_id' => $schedule->id,
+                'guests' => $data['guests'],
+                'status' => 'confirmed',
+                'price_per_guest' => $pricePerGuest,
+                'total_price' => $totalPrice,
+            ]);
+        });
 
         return (new BeachBookingResource(
             $booking->load([
@@ -115,25 +123,34 @@ class BeachBookingController extends Controller
             'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
-        if (array_key_exists('guests', $data)) {
-            $schedule = $beachBooking->schedule()->with('activity')->firstOrFail();
-            $date = $schedule->activity_date->toDateString();
-
-            $this->assertReservationActiveOn($beachBooking->reservation, $date, $data['guests']);
-            $this->assertScheduleCapacityAvailable($schedule, $data['guests'], $beachBooking->id);
-
-            $data['total_price'] = bcmul(
-                (string) $beachBooking->price_per_guest,
-                (string) $data['guests'],
-                2,
-            );
-        }
-
         if (($data['status'] ?? null) === 'cancelled' && $beachBooking->status !== 'cancelled') {
             $data['cancelled_at'] = now();
         }
 
-        $beachBooking->update($data);
+        if (array_key_exists('guests', $data)) {
+            DB::transaction(function () use ($beachBooking, &$data) {
+                $schedule = BeachActivitySchedule::query()
+                    ->whereKey($beachBooking->beach_activity_schedule_id)
+                    ->with('activity')
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $date = $schedule->activity_date->toDateString();
+
+                $this->assertReservationActiveOn($beachBooking->reservation, $date, $data['guests']);
+                $this->assertScheduleCapacityAvailable($schedule, $data['guests'], $beachBooking->id);
+
+                $data['total_price'] = bcmul(
+                    (string) $beachBooking->price_per_guest,
+                    (string) $data['guests'],
+                    2,
+                );
+
+                $beachBooking->update($data);
+            });
+        } else {
+            $beachBooking->update($data);
+        }
 
         return new BeachBookingResource(
             $beachBooking->load([
