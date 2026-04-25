@@ -607,3 +607,139 @@ test('historical park booking serializes its archived park (withTrashed)', funct
     expect($response->json('data.park'))->not->toBeNull()
         ->and($response->json('data.park.id'))->toBe($park->id);
 });
+
+// PR 7 — day-pass cancel/date-change is blocked when activity bookings reference it
+
+test('manager can cancel a day-pass with no linked activity bookings', function () {
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $park                    = openEveryDayPark();
+    $manager                 = parkManagerUser();
+
+    $booking = \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => $checkIn,
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    $this->actingAs($manager)
+        ->patchJson("/api/park-bookings/{$booking->id}", ['status' => 'cancelled'])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'cancelled');
+});
+
+test('manager cannot cancel a day-pass that has linked confirmed activity bookings', function () {
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $park                    = openEveryDayPark();
+    $manager                 = parkManagerUser();
+
+    $dayPass = \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => $checkIn,
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    $activity = \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'price' => 30,
+        'max_capacity' => 10,
+    ]);
+    $schedule = $activity->schedules()->create([
+        'date' => $checkIn,
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+        'status' => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+    \App\Models\ParkActivityBooking::create([
+        'reservation_id' => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'confirmed',
+        'price_per_guest' => 30,
+        'total_price' => 60,
+    ]);
+
+    $this->actingAs($manager)
+        ->patchJson("/api/park-bookings/{$dayPass->id}", ['status' => 'cancelled'])
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($dayPass->fresh()->status)->toBe('confirmed');
+});
+
+test('manager can move a day-pass date when no activity bookings exist on the old date', function () {
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $newDate                 = Carbon::parse($checkIn)->addDay()->toDateString();
+    $park                    = openEveryDayPark();
+    $manager                 = parkManagerUser();
+
+    $booking = \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => $checkIn,
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    $this->actingAs($manager)
+        ->patchJson("/api/park-bookings/{$booking->id}", ['date' => $newDate])
+        ->assertOk()
+        ->assertJsonPath('data.date', $newDate);
+});
+
+test('manager cannot move a day-pass date when activity bookings exist on the old date', function () {
+    $customer                = parkCustomer();
+    [$reservation, $checkIn] = singleRoomReservation($customer);
+    $newDate                 = Carbon::parse($checkIn)->addDay()->toDateString();
+    $park                    = openEveryDayPark();
+    $manager                 = parkManagerUser();
+
+    $booking = \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => $checkIn,
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    $activity = \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'price' => 30,
+        'max_capacity' => 10,
+    ]);
+    $schedule = $activity->schedules()->create([
+        'date' => $checkIn,
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+        'status' => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+    \App\Models\ParkActivityBooking::create([
+        'reservation_id' => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'confirmed',
+        'price_per_guest' => 30,
+        'total_price' => 60,
+    ]);
+
+    $this->actingAs($manager)
+        ->patchJson("/api/park-bookings/{$booking->id}", ['date' => $newDate])
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($booking->fresh()->date->toDateString())->toBe($checkIn);
+});

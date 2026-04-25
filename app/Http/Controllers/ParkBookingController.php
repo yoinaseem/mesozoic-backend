@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\ParkBookingResource;
+use App\Models\ParkActivityBooking;
 use App\Models\ParkBooking;
 use App\Models\Reservation;
 use App\Models\ThemePark;
@@ -124,8 +125,16 @@ class ParkBookingController extends Controller
 
         $dateChanges   = array_key_exists('date', $data);
         $guestsChanges = array_key_exists('guests', $data);
+        $statusToCancelled = ($data['status'] ?? null) === 'cancelled' && $parkBooking->status !== 'cancelled';
 
-        if (($data['status'] ?? null) === 'cancelled' && $parkBooking->status !== 'cancelled') {
+        if ($dateChanges || $statusToCancelled) {
+            $this->assertNoLinkedActivityBookings(
+                $parkBooking,
+                $statusToCancelled ? 'cancel' : 'move',
+            );
+        }
+
+        if ($statusToCancelled) {
             $data['cancelled_at'] = now();
         }
 
@@ -184,12 +193,38 @@ class ParkBookingController extends Controller
     {
         $this->authorize('delete', $parkBooking);
 
+        $this->assertNoLinkedActivityBookings($parkBooking, 'cancel');
+
         $parkBooking->update([
             'status'       => 'cancelled',
             'cancelled_at' => now(),
         ]);
 
         return response()->json(null, 204);
+    }
+
+    /**
+     * Block a day-pass cancel or date-change when the same reservation has
+     * confirmed activity bookings on schedules of this park on this date —
+     * those bookings would be orphaned, since assertHoldsDayPass is enforced
+     * only at booking-create time. Operator must cancel the activity bookings
+     * first.
+     */
+    private function assertNoLinkedActivityBookings(ParkBooking $parkBooking, string $verb): void
+    {
+        $count = ParkActivityBooking::query()
+            ->where('reservation_id', $parkBooking->reservation_id)
+            ->where('status', 'confirmed')
+            ->whereHas('schedule', fn ($q) => $q->whereDate('date', $parkBooking->date->toDateString()))
+            ->whereHas('schedule.parkActivity', fn ($q) => $q->where('park_id', $parkBooking->park_id))
+            ->count();
+
+        if ($count > 0) {
+            abort(response()->json([
+                'message' => "Cannot {$verb} this day-pass: {$count} confirmed activity booking(s) reference it. Cancel those first.",
+                'blocking_bookings' => $count,
+            ], 409));
+        }
     }
 
     private function assertReservationOwnedByCaller(\App\Models\User $user, Reservation $reservation): void
