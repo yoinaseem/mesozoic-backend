@@ -14,13 +14,18 @@ This document describes every HTTP endpoint the Laravel API currently exposes, t
 - **Timestamps**: ISO-8601 strings (`2026-04-19T13:24:01.000000Z`).
 - **Dates**: `YYYY-MM-DD` (e.g. `activity_date`, `travel_date`, `arrival_date`).
 - **Times**: `HH:mm:ss` 24-hour (e.g. `09:30:00`). Validators reject anything else.
+- **App timezone**: `Indian/Maldives` (UTC+5, no DST) since DESD-95. Server-side `today()`, `now()`, and date filters resolve to local business day. Timestamps in API responses serialize in this zone — clients consuming ISO strings with timezone info handle this transparently; clients hard-coding a UTC offset on display will need updating. Date-only fields (`date`, `activity_date`, `travel_date`) are unaffected.
 - **Money**: decimal strings cast at the model level; `BeachActivityResource` casts `price` to `float`. Treat as numeric, not string-equal.
 - **Soft-delete model (hotel stack + users).** `DELETE` on `hotels`, `room-types`, `rooms`, and `users` is **archival** — rows are hidden from index/show but preserved for historical booking references. Guarded by upcoming-booking checks (see `409` below). Restore endpoints exist for each (see §5, §6, §3). Bookings themselves are NOT soft-deletable at the row level — they use a separate `status='cancelled'` + `cancelled_at` soft-cancel (see §11–§15).
 - **Errors**:
   - `401 Unauthorized` — missing/invalid bearer token on a protected route.
   - `403 Forbidden` — token valid but the policy or `permission:` middleware denies the action.
   - `404 Not Found` — route-model binding failure (including nested-scope mismatches, e.g. `/hotels/1/rooms/9` where room 9 belongs to hotel 2). Archived hotels/rooms/room-types/users also resolve as 404 on their standard read endpoints.
-  - `409 Conflict` — archival blocked because upcoming confirmed bookings reference the entity. Body shape: `{ "message": "...", "blocking_bookings": <int> }`. Also raised by `POST .../restore` when a parent is still archived.
+  - `409 Conflict` — archival blocked because upcoming confirmed bookings reference the entity. Default body shape: `{ "message": "...", "blocking_bookings": <int> }`. Also raised by:
+    - `POST .../restore` when a parent is still archived.
+    - **Park hour-cascade endpoints** (§9 Opening Hours / Hour Overrides) when a mutation would invalidate existing schedules and the request did not pass `on_conflict: "cascade"`. Body shape: `{ "message", "conflicts": [{schedule_id, park_activity_id, date, start_time, end_time, confirmed_bookings}], "counts": {schedules, bookings} }`.
+    - **Day-pass cancel / date-change** (§12) when the reservation holds confirmed park-activity bookings on the affected park-date. Default `blocking_bookings` shape applies.
+    - **Park-capacity lower** (§9 Theme Parks) when a child activity's `max_capacity` exceeds the new cap. Body shape: `{ "message", "offending_activities": [{id, name, max_capacity}] }`.
   - `422 Unprocessable Entity` — validation. Body shape: `{ "message": "...", "errors": { "field": ["msg"] } }`.
   - `204 No Content` — successful delete/archive/cancel.
 
@@ -526,6 +531,8 @@ contact_phone required, string max:50
 ```
 `PATCH`: every field `sometimes`.
 
+**Capacity-lower guard (DESD-95).** If `PATCH` lowers `capacity` below the `max_capacity` of any existing `ParkActivity` under this park, the request is rejected with `409 { message, offending_activities: [{id, name, max_capacity}] }`. Operator must lower the offending activities' `max_capacity` first (or archive them). The symmetric check on activity create/update (`max_capacity ≤ park.capacity`) lives at §9 Park Activities.
+
 ##### Opening Hours (weekday baseline — nested)
 
 `ParkOpeningHour` is the default schedule for a weekday. One row per `(park_id, day)`; `day ∈ {monday, tuesday, wednesday, thursday, friday, saturday, sunday}`. Both times required.
@@ -552,11 +559,19 @@ contact_phone required, string max:50
 
 Validation `POST`:
 ```
-day         required, in:monday,…,sunday, unique per park_id
-open_time   required, H:i:s
-close_time  required, H:i:s, different:open_time
+day          required, in:monday,…,sunday, unique per park_id
+open_time    required, H:i:s
+close_time   required, H:i:s, different:open_time
+on_conflict  optional, in:reject,cascade (default: reject)
 ```
 `PATCH`: every field `sometimes`; unique check ignores the current row. Controller also re-validates `open_time != close_time` on effective values.
+
+**Hours-cascade (DESD-95).** Baseline create / update / delete may invalidate pre-existing `ParkActivitySchedule` rows whose stored window no longer fits the new effective hours over the next 366 days. Two modes:
+
+- **`on_conflict: "reject"`** (default): if any conflicts exist, the mutation is rolled back and returns `409` with the structured conflict report from §1. No state change.
+- **`on_conflict: "cascade"`**: mutation persists + the reconciler cancels affected schedules and their confirmed `ParkActivityBooking` rows in one transaction. **Re-sync exception for `is_all_day` activities**: if the date is still open under the new hours, the all-day schedule's window is *re-synced* to the new hours instead of cancelled (bookings stay confirmed). Successful response includes `cascade: { schedules_cancelled, bookings_cancelled, schedules_resynced }`.
+
+`DELETE` returns `204` with no body when no cascade was needed (back-compat) and `200` with the cascade summary when schedules were cancelled. For `DELETE`, pass the mode as a query param: `?on_conflict=cascade`.
 
 ##### Hour Overrides (per-date exceptions — nested)
 
@@ -586,12 +601,15 @@ close_time  required, H:i:s, different:open_time
 
 Validation `POST`:
 ```
-date        required, date, unique per park_id
-open_time   nullable, required_with:close_time, H:i:s
-close_time  nullable, required_with:open_time, H:i:s, different:open_time
-note        nullable, string max:255
+date         required, date, unique per park_id
+open_time    nullable, required_with:close_time, H:i:s
+close_time   nullable, required_with:open_time, H:i:s, different:open_time
+note         nullable, string max:255
+on_conflict  optional, in:reject,cascade (default: reject)
 ```
 Both times set → "open with explicit hours". Both `null` → "closed that day". Partial (one set, one null) → `422`. `PATCH`: every field `sometimes`; the both-or-neither check runs on effective values.
+
+**Hours-cascade (DESD-95).** Override create / update may invalidate pre-existing `ParkActivitySchedule` rows on the affected date(s) — single date for create, union of old + new dates for update if the `date` field changes. Same hybrid contract as Opening Hours: default `reject` returns `409` with the conflict report; `cascade` persists the override and chains into reconciler cleanup (cancel timed schedules + their bookings; re-sync `is_all_day` schedules whose date stays open). Closed-day overrides (`open_time=null`, `close_time=null`) cancel all schedules on that date under cascade. Successful response includes `cascade: { schedules_cancelled, bookings_cancelled, schedules_resynced }`. `DELETE` widens hours back to baseline, never invalidates schedules — no cascade path needed; returns `204`.
 
 ##### Effective Hours (computed endpoint)
 
@@ -621,6 +639,10 @@ Response — `data` is always an array (one entry per day):
 ##### Park Activities (nested)
 
 `ParkActivity` is a catalogue entry under one park. Each activity is either **all-day** (`is_all_day = true`, `duration = null`) or **timed** (`is_all_day = false`, `duration` in minutes required). `max_capacity` caps concurrent guests per session. Sessions themselves are `ParkActivitySchedule` rows.
+
+**`is_all_day` semantics (DESD-95).** "Drop-in any time during park hours" — aquarium-style day pass. One schedule per `(activity, date)`; the schedule's window mirrors `effectiveHoursOn(date)` at materialization time. **Schedules for all-day activities are not authored manually** — the booking flow auto-creates them on first booking (see §14 for the alternate `park_activity_id + date` POST shape). Manual `POST .../schedules` for an all-day activity returns `422 errors.park_activity_id`. Hours-change cascade (§9) re-syncs the all-day schedule's window when the date stays open and only cancels when the date becomes closed.
+
+**`duration` is a UI default, not a runtime invariant (DESD-95).** Mutating `activity.duration` no longer shifts existing schedules — schedule `start_time`/`end_time` are canonical (Model B). Treat `duration` as a prefill hint when authoring new timed schedules.
 
 ```json
 {
@@ -660,14 +682,16 @@ description  nullable, string
 price        required, numeric min:0
 image        nullable, string max:255
 duration     required unless is_all_day=true, integer min:1  (forced to null when is_all_day=true)
-max_capacity required, integer min:1
+max_capacity required, integer min:1, ≤ park.capacity (DESD-95)
 is_all_day   optional, boolean (default false)
 ```
-`PATCH`: every field `sometimes`. Controller re-checks on effective values: if `is_all_day` ends up `false` and `duration` ends up `null`, returns `422` on `duration`.
+`PATCH`: every field `sometimes`. Controller re-checks on effective values: if `is_all_day` ends up `false` and `duration` ends up `null`, returns `422` on `duration`. `max_capacity > park.capacity` returns `422 errors.max_capacity` on both create and update — see §9 Theme Parks for the symmetric park-side guard.
 
 ##### Park Activity Schedules (double-nested)
 
-`ParkActivitySchedule` pins a `ParkActivity` to `date + start_time`. `status ∈ {scheduled, cancelled, completed}` (default `scheduled`). `end_time` is either explicit (stored) or **derived** at serialization as `start_time + activity.duration` when the parent activity carries a duration. The resource exposes both the resolved time and an `end_time_source ∈ {explicit, derived, null}` so clients know whether the value came from the row or from the activity's duration.
+`ParkActivitySchedule` pins a `ParkActivity` to `date + start_time + end_time`. `status ∈ {scheduled, cancelled, completed}` (default `scheduled`). Since DESD-95, `start_time` and `end_time` are both `NOT NULL` and **canonical (Model B)** — `activity.duration` is a UI default only, never consumed at read time. The resource still emits `end_time_source` for backward compatibility, always `'explicit'` now (the `'derived'` and `null` modes have been removed; the field will be retired in a follow-up release).
+
+Overnight schedules are supported: `end_time < start_time` is interpreted as next-calendar-day. Stored verbatim; the date-aware reconciler handles the wrap.
 
 ```json
 {
@@ -676,7 +700,7 @@ is_all_day   optional, boolean (default false)
   "date": "2026-05-01",
   "start_time": "10:00:00",
   "end_time": "10:45:00",
-  "end_time_source": "derived",   // explicit | derived | null
+  "end_time_source": "explicit",  // always "explicit" since DESD-95
   "status": "scheduled",
   "notes": null,
   "activity": { /* ParkActivityResource when eager-loaded */ },
@@ -698,19 +722,27 @@ Route named `park-activity-schedules`. Pipe-OR middleware is safe here because p
 
 **Archive semantics.** `DELETE` refuses with `409 { blocking_bookings: N }` when any confirmed `ParkActivityBooking` has `park_activity_schedule_id = this` and `schedule.date >= today`. On success: `204`, row kept with `deleted_at` set; `GET` returns `404` once archived.
 
-**Slot uniqueness is validation-layer** (uses the closure against `$parkActivity->schedules()`, which picks up the SoftDeletes global scope). That means a new schedule can reuse the exact `(date, start_time)` slot of an archived one — useful for recreating a mistakenly-archived session. Duplicate **live** slots still return `422 errors.start_time`.
+**Slot uniqueness (DESD-95).** Enforced at three layers: (1) reconciler-level overlap check on every create / window-mutation, which rejects any `[start, end)` overlapping an existing live schedule of the same activity (a strict superset of exact-match duplicates) — see `errors.start_time`; (2) controller-level closure-uniqueness check inside the `DB::transaction` + `lockForUpdate` critical section, retained for friendlier error messages; (3) Postgres partial unique index `(park_activity_id, date, start_time) WHERE deleted_at IS NULL`, the race-safe DB backstop. A new schedule can reuse the `(date, start_time)` slot of an archived schedule because the index is partial; live duplicates and overlaps still return `422 errors.start_time`.
+
+**Race-safety (DESD-95).** Booking and schedule writes run inside `DB::transaction` with `lockForUpdate()` on the parent (park / schedule / activity respectively) so concurrent submissions can't both pass count-then-insert capacity / uniqueness checks. The pre-PR scenario where two simultaneous bookings could both succeed at the capacity edge is closed.
 
 **Restore.** Returns `409` if the parent park or the parent activity is still archived — restore the nearest archived ancestor first; that cascades back through.
 
+**Manual creation forbidden for `is_all_day` activities (DESD-95).** `POST .../schedules` returns `422 errors.park_activity_id` when the activity is `is_all_day=true`. Use the booking flow's `park_activity_id + date` shape (§14) — the schedule materializes automatically on first booking with its window mirrored from `effectiveHoursOn(date)`.
+
 Validation `POST`:
 ```
-date        required, date
-start_time  required, H:i:s, unique per (park_activity_id, date)
-end_time    nullable, H:i:s, different:start_time
+date        required, date, after_or_equal:today          (DESD-95)
+start_time  required, H:i:s
+end_time    required, H:i:s, different:start_time         (DESD-95: now required + NOT NULL column)
 status      optional, in:scheduled,cancelled,completed
 notes       nullable, string
 ```
-`PATCH`: every field `sometimes`; the duplicate-slot check (closure + `exists()`) ignores the current row and falls back to `schedule.date` when `date` is omitted. `start_time != end_time` is re-checked on effective values.
+**Server-side business rules** (each returns `422` with the listed key):
+- **Fits-in-hours** (`errors.start_time`): the `[start_time, end_time)` window must fit inside `effectiveHoursOn(date)`. Date-aware overnight math: `end_time < start_time` wraps to date+1, same for park hours where `close < open`. Closed / `not_configured` dates are fail-closed (`errors.date`).
+- **No overlap** (`errors.start_time`): no other live (non-trashed, non-cancelled) schedule of the same activity overlaps `[start_time, end_time)`. Skipped for `is_all_day` activities (which use per-date uniqueness, materialized via the booking flow).
+
+`PATCH`: every field `sometimes`. The fits-in-hours and overlap checks re-run when any of `date` / `start_time` / `end_time` changes. **Past-date guard (DESD-95)**: changing `date` to a value before today returns `422 errors.date`; tweaks to `notes` / `status` on past schedules remain allowed for cleanup. `start_time != end_time` is re-checked on effective values.
 
 ---
 
@@ -901,7 +933,11 @@ If `date` or `guests` change, the seat-pool, open-on-date, uniqueness, and capac
 - Sets `status=cancelled` and `cancelled_at=now()`; returns `204` with no body. The row is preserved for audit.
 - Customers receive `403` — park booking cancellation is now staff-only (`park-manager` / `superadmin`), unified with the room/beach/ferry/park-activity modules.
 
+**Day-pass cancel / date-change block (DESD-95).** Both `PATCH status=cancelled` (or `DELETE`) and `PATCH date=…` are blocked with `409 { message, blocking_bookings: <int> }` when the same reservation holds confirmed `ParkActivityBooking` rows on a schedule of this park on the day-pass's current `date`. Closes the orphan-bookings gap: pre-DESD-95, cancelling a day-pass left dependent activity bookings silently confirmed even though the `assertHoldsDayPass` invariant was broken. Operator must cancel the activity bookings first, then the day-pass.
+
 **Cancellation cascade (known gap).** Cancelling a `RoomBooking` that drops `seatPoolOn(date)` to 0 does **not** auto-cancel attached park bookings today. Treat this on the client as a potential stale-ticket risk until the cascade lands. Tracked as a follow-up against `RoomBookingController::enforceSeatPoolInvariantOrFail`.
+
+**Race-safety (DESD-95).** Park-booking `store` and the date/guests path of `update` run inside `DB::transaction` + `lockForUpdate()` on the `theme_parks` row, with the duplicate-per-park and capacity checks inside the lock. Two concurrent `POST /park-bookings` requests at the capacity edge can no longer both succeed; one gets `422 errors.park_id`. Same pattern in `/park-activity-bookings` (§14) with the lock on the schedule row.
 
 **Multi-park note.** The database currently holds a hard limit of one `ThemePark`. The controller and uniqueness rule are already multi-park-ready — when more parks are added, the per-park uniqueness key supports splits (parents at Park A, kids at Park B on the same date) without code changes.
 
@@ -1018,17 +1054,29 @@ Routes are per-verb (not pipe-OR) — same reasoning as `/park-bookings` and `/b
 
 Index filters (all optional, AND-combined): `?status=confirmed|cancelled`, `?park_activity_schedule_id=`, `?park_activity_id=`, `?park_id=`, `?reservation_id=`, `?date=YYYY-MM-DD`. Pagination 10/page.
 
-Validation `POST`:
+Validation `POST` — **two payload shapes since DESD-95**:
+
+**Timed-flow (existing)** — target a specific authored schedule:
 ```
 reservation_id             required, exists:reservations
-park_activity_schedule_id  required, exists:park_activity_schedules
+park_activity_schedule_id  required_without:park_activity_id, exists:park_activity_schedules
 guests                     required, integer, min:1
 ```
+
+**All-day flow (new — DESD-95)** — for `is_all_day=true` activities; the schedule is materialized lazily on the server:
+```
+reservation_id    required, exists:reservations
+park_activity_id  required_without:park_activity_schedule_id, exists:park_activities
+date              required_with:park_activity_id, date
+guests            required, integer, min:1
+```
+The server locks the activity row, verifies `is_all_day=true`, then `firstOrCreate`-s a per-date `ParkActivitySchedule` whose `start_time`/`end_time` mirror `effectiveHoursOn(date)`. Subsequent bookings on the same `(activity, date)` reuse the materialized row. Closed / `not_configured` dates return `422 errors.date`. Passing `park_activity_id` for a non-all-day activity returns `422 errors.park_activity_id`.
 
 Additional server-side business rules enforced in `ParkActivityBookingController::store`, each returning `422` with a specific validation key on failure:
 
 - **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / park-manager bypass).
 - **Schedule bookable** (`errors.park_activity_schedule_id`): schedule `status === 'scheduled'` (not `cancelled` / `completed`) and `date >= today`.
+- **Schedule fits effective hours** (`errors.park_activity_schedule_id`, DESD-95): defense-in-depth re-validation of the schedule's stored window against current effective hours, catches stale schedules from a bypassed cascade.
 - **Park open** (`errors.park_activity_schedule_id`): `ThemePark::isOpenOn(date) === true`.
 - **Seat pool > 0** (`errors.park_activity_schedule_id`): `Reservation::seatPoolOn(date) > 0`.
 - **Seat pool cap** (`errors.guests`): `guests <= seatPoolOn(date)`.
