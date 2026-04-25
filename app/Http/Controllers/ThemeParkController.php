@@ -65,6 +65,26 @@ class ThemeParkController extends Controller
             'contact_phone' => ['sometimes', 'string', 'max:50'],
         ]);
 
+        // Block capacity-lowering when child activities still claim a higher
+        // max_capacity. Per-activity caps must be ≤ park.capacity (validated
+        // on activity CRUD); this is the symmetric guard for the park side.
+        if (array_key_exists('capacity', $data) && $data['capacity'] < $themePark->capacity) {
+            $offenders = $themePark->parkActivities()
+                ->where('max_capacity', '>', $data['capacity'])
+                ->get(['id', 'name', 'max_capacity']);
+
+            if ($offenders->isNotEmpty()) {
+                abort(response()->json([
+                    'message' => "Cannot lower park capacity to {$data['capacity']} — some activities have a higher max_capacity. Lower those first.",
+                    'offending_activities' => $offenders->map(fn ($a) => [
+                        'id' => $a->id,
+                        'name' => $a->name,
+                        'max_capacity' => $a->max_capacity,
+                    ])->values(),
+                ], 409));
+            }
+        }
+
         $themePark->update($data);
 
         return new ThemeParkResource($themePark);

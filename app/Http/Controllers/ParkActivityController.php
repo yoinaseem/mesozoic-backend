@@ -46,7 +46,16 @@ class ParkActivityController extends Controller
                 'integer',
                 'min:1',
             ],
-            'max_capacity' => ['required', 'integer', 'min:1'],
+            'max_capacity' => [
+                'required',
+                'integer',
+                'min:1',
+                function ($attribute, $value, $fail) use ($themePark) {
+                    if ($value > $themePark->capacity) {
+                        $fail("The max_capacity ({$value}) cannot exceed the park's capacity ({$themePark->capacity}).");
+                    }
+                },
+            ],
             'is_all_day' => ['sometimes', 'boolean'],
         ]);
 
@@ -69,7 +78,16 @@ class ParkActivityController extends Controller
             'price' => ['sometimes', 'numeric', 'min:0'],
             'image' => ['sometimes', 'nullable', 'string', 'max:255'],
             'duration' => ['sometimes', 'nullable', 'integer', 'min:1'],
-            'max_capacity' => ['sometimes', 'integer', 'min:1'],
+            'max_capacity' => [
+                'sometimes',
+                'integer',
+                'min:1',
+                function ($attribute, $value, $fail) use ($themePark) {
+                    if ($value > $themePark->capacity) {
+                        $fail("The max_capacity ({$value}) cannot exceed the park's capacity ({$themePark->capacity}).");
+                    }
+                },
+            ],
             'is_all_day' => ['sometimes', 'boolean'],
         ]);
 

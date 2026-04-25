@@ -230,3 +230,46 @@ test('non-superadmin cannot restore a theme park', function () {
         ->postJson("/api/theme-parks/{$park->id}/restore")
         ->assertForbidden();
 });
+
+// PR 8 — capacity-lowering blocked when child activities exceed new cap
+
+test('park-capacity update is blocked when child activities exceed the new cap', function () {
+    $park = ThemePark::factory()->create(['capacity' => 100]);
+    $bigActivity = \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'max_capacity' => 80,
+    ]);
+    \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'max_capacity' => 30,
+    ]);
+
+    $manager = User::factory()->parkManager()->create();
+
+    $response = $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}", ['capacity' => 50])
+        ->assertStatus(409);
+
+    expect($response->json('offending_activities.0.id'))->toBe($bigActivity->id);
+    expect($park->fresh()->capacity)->toBe(100);
+});
+
+test('park-capacity update succeeds when no child activity exceeds the new cap', function () {
+    $park = ThemePark::factory()->create(['capacity' => 100]);
+    \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'max_capacity' => 30,
+    ]);
+    \App\Models\ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'max_capacity' => 40,
+    ]);
+
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}", ['capacity' => 50])
+        ->assertOk();
+
+    expect($park->fresh()->capacity)->toBe(50);
+});

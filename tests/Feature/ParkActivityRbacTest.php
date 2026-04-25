@@ -290,3 +290,50 @@ test('restoring an activity while its parent park is archived returns 409', func
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/restore")
         ->assertStatus(409);
 });
+
+// PR 8 — max_capacity must not exceed park.capacity
+
+test('activity create rejects max_capacity exceeding park capacity', function () {
+    $park = ThemePark::factory()->create(['capacity' => 50]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities", [
+            'name' => 'Big Coaster',
+            'price' => 25,
+            'duration' => 30,
+            'max_capacity' => 51,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('max_capacity');
+});
+
+test('activity create accepts max_capacity equal to park capacity', function () {
+    $park = ThemePark::factory()->create(['capacity' => 50]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities", [
+            'name' => 'Right-Sized Coaster',
+            'price' => 25,
+            'duration' => 30,
+            'max_capacity' => 50,
+        ])
+        ->assertCreated();
+});
+
+test('activity update rejects max_capacity exceeding park capacity', function () {
+    $park = ThemePark::factory()->create(['capacity' => 50]);
+    $activity = ParkActivity::factory()->create([
+        'park_id' => $park->id,
+        'max_capacity' => 30,
+    ]);
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/theme-parks/{$park->id}/activities/{$activity->id}", [
+            'max_capacity' => 60,
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('max_capacity');
+});
