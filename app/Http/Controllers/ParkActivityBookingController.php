@@ -26,8 +26,10 @@ class ParkActivityBookingController extends Controller
         $user = $request->user();
 
         $query = ParkActivityBooking::query()->with([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.parkActivity.themePark',
+            'reservation.user'                => fn ($q) => $q->withTrashed(),
+            'schedule'                        => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity'           => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark' => fn ($q) => $q->withTrashed(),
         ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
@@ -65,8 +67,10 @@ class ParkActivityBookingController extends Controller
         $this->authorize('view', $parkActivityBooking);
 
         $parkActivityBooking->load([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.parkActivity.themePark',
+            'reservation.user'                => fn ($q) => $q->withTrashed(),
+            'schedule'                        => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity'           => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark' => fn ($q) => $q->withTrashed(),
         ]);
 
         return new ParkActivityBookingResource($parkActivityBooking);
@@ -115,8 +119,10 @@ class ParkActivityBookingController extends Controller
 
         return (new ParkActivityBookingResource(
             $booking->load([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.parkActivity.themePark',
+            'reservation.user'                => fn ($q) => $q->withTrashed(),
+            'schedule'                        => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity'           => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark' => fn ($q) => $q->withTrashed(),
         ])
         ))->response()->setStatusCode(201);
     }
@@ -154,8 +160,10 @@ class ParkActivityBookingController extends Controller
 
         return new ParkActivityBookingResource(
             $parkActivityBooking->load([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.parkActivity.themePark',
+            'reservation.user'                => fn ($q) => $q->withTrashed(),
+            'schedule'                        => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity'           => fn ($q) => $q->withTrashed(),
+            'schedule.parkActivity.themePark' => fn ($q) => $q->withTrashed(),
         ])
         );
     }

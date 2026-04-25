@@ -233,3 +233,59 @@ test('toggling an all-day activity to non-all-day succeeds when duration is prov
         ->assertJsonPath('data.is_all_day', false)
         ->assertJsonPath('data.duration', 60);
 });
+
+test('superadmin can archive a park activity (soft-delete)', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/activities/{$activity->id}")
+        ->assertNoContent();
+
+    expect($activity->fresh()->trashed())->toBeTrue();
+});
+
+test('archive is blocked when an activity has upcoming confirmed bookings', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date'       => now()->addDays(3)->toDateString(),
+        'start_time' => '11:00:00',
+        'status'     => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+
+    $customer = User::factory()->customer()->create();
+    $reservation = \App\Models\Reservation::create(['user_id' => $customer->id]);
+    \App\Models\ParkActivityBooking::create([
+        'reservation_id'            => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests'                    => 1,
+        'status'                    => 'confirmed',
+        'price_per_guest'           => $activity->price,
+        'total_price'               => (float) $activity->price,
+    ]);
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/activities/{$activity->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($activity->fresh()->trashed())->toBeFalse();
+});
+
+test('restoring an activity while its parent park is archived returns 409', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+
+    // Archive the park (cascades to activity).
+    $park->delete();
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/restore")
+        ->assertStatus(409);
+});

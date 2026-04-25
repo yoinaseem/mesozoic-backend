@@ -258,3 +258,70 @@ test('duplicate date+start_time is rejected', function () {
         ->assertUnprocessable()
         ->assertJsonValidationErrors('start_time');
 });
+
+test('superadmin can archive a schedule (soft-delete)', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date' => '2026-07-01',
+        'start_time' => '10:00:00',
+        'status' => ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules/{$schedule->id}")
+        ->assertNoContent();
+
+    expect($schedule->fresh()->trashed())->toBeTrue();
+});
+
+test('archive is blocked when a schedule has upcoming confirmed bookings', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date' => now()->addDays(5)->toDateString(),
+        'start_time' => '12:00:00',
+        'status' => ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+
+    $customer = User::factory()->customer()->create();
+    $reservation = \App\Models\Reservation::create(['user_id' => $customer->id]);
+    \App\Models\ParkActivityBooking::create([
+        'reservation_id'            => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests'                    => 1,
+        'status'                    => 'confirmed',
+        'price_per_guest'           => $activity->price,
+        'total_price'               => (float) $activity->price,
+    ]);
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules/{$schedule->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($schedule->fresh()->trashed())->toBeFalse();
+});
+
+test('schedule slot can be reused after the original is archived', function () {
+    $park = ThemePark::factory()->create();
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $old = $activity->schedules()->create([
+        'date' => '2026-08-15',
+        'start_time' => '14:00:00',
+        'status' => ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+    $old->delete();
+
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-08-15',
+            'start_time' => '14:00:00',
+        ])
+        ->assertCreated();
+});

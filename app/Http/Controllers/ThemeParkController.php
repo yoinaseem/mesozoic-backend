@@ -3,6 +3,8 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\ThemeParkResource;
+use App\Models\ParkActivityBooking;
+use App\Models\ParkBooking;
 use App\Models\ThemePark;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
@@ -72,8 +74,40 @@ class ThemeParkController extends Controller
     {
         $this->authorize('delete', $themePark);
 
+        // Two paths can block: a direct day-pass booking on this park, OR an
+        // activity booking on a schedule nested under this park.
+        $blockingPark = ParkBooking::query()
+            ->upcomingActive()
+            ->where('park_id', $themePark->id)
+            ->count();
+
+        $blockingActivity = ParkActivityBooking::query()
+            ->upcomingActive()
+            ->whereHas('schedule.parkActivity', fn ($q) => $q->where('park_id', $themePark->id))
+            ->count();
+
+        $blocking = $blockingPark + $blockingActivity;
+
+        if ($blocking > 0) {
+            return response()->json([
+                'message'           => 'Cannot archive a theme park with upcoming or in-progress bookings.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
         $themePark->delete();
 
         return response()->json(null, 204);
+    }
+
+    public function restore(ThemePark $themePark): ThemeParkResource
+    {
+        $this->authorize('restore', $themePark);
+
+        if ($themePark->trashed()) {
+            $themePark->restore();
+        }
+
+        return new ThemeParkResource($themePark);
     }
 }

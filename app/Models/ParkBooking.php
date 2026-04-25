@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,6 +10,18 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ParkBooking extends Model
 {
     use HasFactory;
+
+    /**
+     * Confirmed bookings whose visit date hasn't passed yet — the set that
+     * blocks theme-park archival. Inclusive of today so the same-day guest
+     * still counts as in-progress.
+     */
+    public function scopeUpcomingActive(Builder $query): Builder
+    {
+        return $query
+            ->where('status', 'confirmed')
+            ->whereDate('date', '>=', today());
+    }
 
     public const STATUS_CONFIRMED = 'confirmed';
     public const STATUS_CANCELLED = 'cancelled';

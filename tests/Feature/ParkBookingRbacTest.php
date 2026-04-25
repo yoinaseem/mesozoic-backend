@@ -580,3 +580,30 @@ test('customer index only returns their own park bookings', function () {
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.reservation_id', $rMine->id);
 });
+
+test('historical park booking serializes its archived park (withTrashed)', function () {
+    [$reservation, $checkIn] = singleRoomReservation(parkCustomer());
+    $park = openEveryDayPark();
+
+    $booking = \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => $checkIn,
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    // Archive the park after the booking exists.
+    $park->delete();
+
+    $admin = User::factory()->superadmin()->create();
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/park-bookings/{$booking->id}")
+        ->assertOk();
+
+    expect($response->json('data.park'))->not->toBeNull()
+        ->and($response->json('data.park.id'))->toBe($park->id);
+});

@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ParkActivityScheduleResource;
 use App\Models\ParkActivity;
+use App\Models\ParkActivityBooking;
 use App\Models\ParkActivitySchedule;
 use App\Models\ThemePark;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
@@ -124,8 +125,48 @@ class ParkActivityScheduleController extends Controller
     ): JsonResponse {
         $this->authorize('delete', $schedule);
 
+        $blocking = ParkActivityBooking::query()
+            ->upcomingActive()
+            ->where('park_activity_schedule_id', $schedule->id)
+            ->count();
+
+        if ($blocking > 0) {
+            return response()->json([
+                'message'           => 'Cannot archive a schedule with upcoming or in-progress bookings.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
         $schedule->delete();
 
         return response()->json(null, 204);
+    }
+
+    public function restore(
+        ThemePark $themePark,
+        ParkActivity $parkActivity,
+        ParkActivitySchedule $schedule
+    ): ParkActivityScheduleResource {
+        $this->authorize('restore', $schedule);
+
+        if ($themePark->trashed()) {
+            abort(response()->json([
+                'message' => 'Restore the parent theme park first.',
+            ], 409));
+        }
+
+        if ($parkActivity->trashed()) {
+            abort(response()->json([
+                'message' => 'Restore the parent park activity first.',
+            ], 409));
+        }
+
+        if ($schedule->trashed()) {
+            $schedule->restore();
+        }
+
+        $schedule->setRelation('parkActivity', $parkActivity);
+
+        return new ParkActivityScheduleResource($schedule);
     }
 }

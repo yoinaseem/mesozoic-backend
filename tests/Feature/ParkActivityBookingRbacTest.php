@@ -614,3 +614,41 @@ test('customer index only returns their own activity bookings', function () {
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.reservation_id', $rMine->id);
 });
+
+test('historical activity booking serializes its archived schedule+activity+park chain', function () {
+    $customer = paCustomer();
+    [$reservation, $checkIn] = paSingleRoomReservation($customer);
+    $park = paOpenEveryDayPark();
+    $activity = ParkActivity::factory()->create([
+        'park_id'      => $park->id,
+        'price'        => 30,
+        'duration'     => 60,
+        'max_capacity' => 10,
+    ]);
+    $schedule = $activity->schedules()->create([
+        'date'       => $checkIn,
+        'start_time' => '10:00:00',
+        'status'     => ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+
+    $booking = ParkActivityBooking::create([
+        'reservation_id'            => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests'                    => 1,
+        'status'                    => 'confirmed',
+        'price_per_guest'           => $activity->price,
+        'total_price'               => (float) $activity->price,
+    ]);
+
+    // Archive the whole chain via park archive (cascades).
+    $park->delete();
+
+    $admin = User::factory()->superadmin()->create();
+
+    $response = $this->actingAs($admin)
+        ->getJson("/api/park-activity-bookings/{$booking->id}")
+        ->assertOk();
+
+    expect($response->json('data.schedule'))->not->toBeNull()
+        ->and($response->json('data.schedule.id'))->toBe($schedule->id);
+});

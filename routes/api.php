@@ -62,6 +62,7 @@ Route::post('/auth/login', [AuthController::class, 'login']);
 Route::middleware('auth:sanctum')->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me', [AuthController::class, 'me']);
+    Route::get('/auth/me/hotels', [AuthController::class, 'meHotels']);
 
     // Users — UserPolicy gates every verb (superadmin-only + self-access).
     Route::apiResource('users', UserController::class);
@@ -125,6 +126,11 @@ Route::middleware('auth:sanctum')->group(function () {
         ->middleware('permission:park.update');
     Route::delete('/theme-parks/{theme_park}', [ThemeParkController::class, 'destroy'])
         ->middleware('permission:park.delete');
+    // Restore archived theme park — withTrashed binding resolves the soft-
+    // deleted row. Same permission + policy as delete.
+    Route::post('/theme-parks/{theme_park}/restore', [ThemeParkController::class, 'restore'])
+        ->withTrashed()
+        ->middleware('permission:park.delete');
 
     Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
         Route::post('/opening-hours', [ParkOpeningHourController::class, 'store'])
@@ -149,11 +155,24 @@ Route::middleware('auth:sanctum')->group(function () {
             ->middleware('permission:park.delete');
     });
 
+    // Restore routes for nested park activities + schedules — separated so
+    // withTrashed applies to both route params.
+    Route::scopeBindings()->prefix('theme-parks/{theme_park}')->group(function () {
+        Route::post('/activities/{park_activity}/restore', [ParkActivityController::class, 'restore'])
+            ->withTrashed()
+            ->middleware('permission:park.delete');
+    });
+
     Route::scopeBindings()->prefix('theme-parks/{theme_park}/activities/{park_activity}')->group(function () {
         Route::apiResource('schedules', ParkActivityScheduleController::class)
             ->except(['index', 'show'])
             ->middleware('permission:park.create|park.update|park.delete')
             ->names('park-activity-schedules');
+
+        Route::post('/schedules/{schedule}/restore', [ParkActivityScheduleController::class, 'restore'])
+            ->withTrashed()
+            ->middleware('permission:park.create|park.update|park.delete')
+            ->name('park-activity-schedules.restore');
     });
 
     // Reservations — read-only. Created implicitly via /room-bookings.

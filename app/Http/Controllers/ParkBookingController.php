@@ -24,7 +24,7 @@ class ParkBookingController extends Controller
 
         $query = ParkBooking::query()->with([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'park',
+            'park'             => fn ($q) => $q->withTrashed(),
         ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('park-manager')) {
@@ -57,7 +57,7 @@ class ParkBookingController extends Controller
 
         $parkBooking->load([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'park',
+            'park'             => fn ($q) => $q->withTrashed(),
         ]);
 
         return new ParkBookingResource($parkBooking);
@@ -100,7 +100,7 @@ class ParkBookingController extends Controller
         return (new ParkBookingResource(
             $booking->load([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'park',
+            'park'             => fn ($q) => $q->withTrashed(),
         ])
         ))->response()->setStatusCode(201);
     }
@@ -159,7 +159,7 @@ class ParkBookingController extends Controller
         return new ParkBookingResource(
             $parkBooking->load([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'park',
+            'park'             => fn ($q) => $q->withTrashed(),
         ])
         );
     }

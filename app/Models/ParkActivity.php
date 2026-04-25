@@ -4,10 +4,11 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class ParkActivity extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'park_id',
@@ -38,5 +39,23 @@ class ParkActivity extends Model
     public function schedules()
     {
         return $this->hasMany(ParkActivitySchedule::class, 'park_activity_id');
+    }
+
+    protected static function booted(): void
+    {
+        static::deleting(function (ParkActivity $activity) {
+            if ($activity->isForceDeleting()) {
+                return;
+            }
+
+            $ts = $activity->freshTimestamp();
+            $activity->schedules()->whereNull('deleted_at')->update(['deleted_at' => $ts]);
+        });
+
+        static::restored(function (ParkActivity $activity) {
+            ParkActivitySchedule::onlyTrashed()
+                ->where('park_activity_id', $activity->id)
+                ->restore();
+        });
     }
 }

@@ -36,4 +36,13 @@ class ThemeParkPolicy
     {
         return false;
     }
+
+    /**
+     * Restore mirrors delete — superadmin-only via before(). Non-superadmins
+     * hit false here.
+     */
+    public function restore(User $user, ThemePark $themePark): bool
+    {
+        return false;
+    }
 }

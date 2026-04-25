@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -9,6 +10,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ParkActivityBooking extends Model
 {
     use HasFactory;
+
+    /**
+     * Confirmed bookings whose session date hasn't passed yet. Joins through
+     * the schedule since the date lives there, not on the booking row.
+     */
+    public function scopeUpcomingActive(Builder $query): Builder
+    {
+        return $query
+            ->where('status', 'confirmed')
+            ->whereHas('schedule', fn ($q) => $q->whereDate('date', '>=', today()));
+    }
 
     public const STATUS_CONFIRMED = 'confirmed';
 

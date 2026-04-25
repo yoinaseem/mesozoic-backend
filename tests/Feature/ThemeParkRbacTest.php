@@ -117,11 +117,114 @@ test('park-manager cannot delete a theme park', function () {
         ->assertForbidden();
 });
 
-test('superadmin can delete a theme park', function () {
+test('superadmin can archive a theme park (soft-delete)', function () {
     $park = ThemePark::factory()->create();
     $admin = User::factory()->superadmin()->create();
 
     $this->actingAs($admin)
         ->deleteJson("/api/theme-parks/{$park->id}")
         ->assertNoContent();
+
+    expect($park->fresh()->trashed())->toBeTrue();
+});
+
+test('archived theme park is hidden from the public index', function () {
+    $live = ThemePark::factory()->create(['name' => 'Live Park']);
+    $archived = ThemePark::factory()->create(['name' => 'Archived Park']);
+    $archived->delete();
+
+    $response = getJson('/api/theme-parks')->assertOk();
+
+    $names = collect($response->json('data'))->pluck('name')->all();
+    expect($names)->toContain('Live Park')->not->toContain('Archived Park');
+});
+
+test('archive is blocked when park has upcoming confirmed park bookings', function () {
+    $park = ThemePark::factory()->create();
+    $customer = User::factory()->customer()->create();
+    $reservation = \App\Models\Reservation::create(['user_id' => $customer->id]);
+    \App\Models\ParkBooking::create([
+        'reservation_id'  => $reservation->id,
+        'park_id'         => $park->id,
+        'date'            => now()->addDays(3)->toDateString(),
+        'guests'          => 2,
+        'status'          => 'confirmed',
+        'price_per_guest' => $park->price,
+        'total_price'     => (float) $park->price * 2,
+    ]);
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect($park->fresh()->trashed())->toBeFalse();
+});
+
+test('archive is blocked when park has upcoming activity bookings on nested schedules', function () {
+    $park = ThemePark::factory()->create();
+    $activity = \App\Models\ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date'       => now()->addDays(2)->toDateString(),
+        'start_time' => '10:00:00',
+        'status'     => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+
+    $customer = User::factory()->customer()->create();
+    $reservation = \App\Models\Reservation::create(['user_id' => $customer->id]);
+    \App\Models\ParkActivityBooking::create([
+        'reservation_id'            => $reservation->id,
+        'park_activity_schedule_id' => $schedule->id,
+        'guests'                    => 1,
+        'status'                    => 'confirmed',
+        'price_per_guest'           => $activity->price,
+        'total_price'               => (float) $activity->price,
+    ]);
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/theme-parks/{$park->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+});
+
+test('superadmin can restore an archived theme park and children cascade back', function () {
+    $park = ThemePark::factory()->create();
+    $activity = \App\Models\ParkActivity::factory()->create(['park_id' => $park->id]);
+    $schedule = $activity->schedules()->create([
+        'date'       => now()->addDays(30)->toDateString(),
+        'start_time' => '09:00:00',
+        'status'     => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
+    ]);
+
+    $park->delete();
+
+    expect($park->fresh()->trashed())->toBeTrue();
+    expect($activity->fresh()->trashed())->toBeTrue();
+    expect($schedule->fresh()->trashed())->toBeTrue();
+
+    $admin = User::factory()->superadmin()->create();
+
+    $this->actingAs($admin)
+        ->postJson("/api/theme-parks/{$park->id}/restore")
+        ->assertOk()
+        ->assertJsonPath('data.id', $park->id);
+
+    expect($park->fresh()->trashed())->toBeFalse();
+    expect($activity->fresh()->trashed())->toBeFalse();
+    expect($schedule->fresh()->trashed())->toBeFalse();
+});
+
+test('non-superadmin cannot restore a theme park', function () {
+    $park = ThemePark::factory()->create();
+    $park->delete();
+
+    $manager = User::factory()->parkManager()->create();
+
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/restore")
+        ->assertForbidden();
 });

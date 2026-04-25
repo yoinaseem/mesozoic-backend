@@ -36,4 +36,9 @@ class ParkActivitySchedulePolicy
     {
         return false;
     }
+
+    public function restore(User $user, ParkActivitySchedule $schedule): bool
+    {
+        return false;
+    }
 }

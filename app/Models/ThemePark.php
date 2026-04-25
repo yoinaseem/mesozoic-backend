@@ -6,10 +6,11 @@ use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 class ThemePark extends Model
 {
-    use HasFactory;
+    use HasFactory, SoftDeletes;
 
     protected $fillable = [
         'name',
@@ -112,5 +113,39 @@ class ThemePark extends Model
     public function isOpenOn(CarbonInterface|string $date): bool
     {
         return $this->effectiveHoursOn($date)['status'] === 'open';
+    }
+
+    /**
+     * Cascade archive/restore to activities + schedules. Bulk updates so every
+     * child picks up the same cascade timestamp. Config rows (opening hours,
+     * overrides) are left alone — they're not soft-deletable and only matter
+     * again if the park is restored.
+     */
+    protected static function booted(): void
+    {
+        static::deleting(function (ThemePark $park) {
+            if ($park->isForceDeleting()) {
+                return;
+            }
+
+            $ts = $park->freshTimestamp();
+
+            $park->parkActivities()->whereNull('deleted_at')->update(['deleted_at' => $ts]);
+
+            ParkActivitySchedule::whereIn(
+                'park_activity_id',
+                $park->parkActivities()->withTrashed()->select('id')
+            )->whereNull('deleted_at')->update(['deleted_at' => $ts]);
+        });
+
+        static::restored(function (ThemePark $park) {
+            ParkActivity::onlyTrashed()
+                ->where('park_id', $park->id)
+                ->restore();
+
+            ParkActivitySchedule::onlyTrashed()
+                ->whereIn('park_activity_id', ParkActivity::where('park_id', $park->id)->select('id'))
+                ->restore();
+        });
     }
 }
