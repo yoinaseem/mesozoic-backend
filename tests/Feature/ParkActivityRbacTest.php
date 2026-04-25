@@ -252,6 +252,7 @@ test('archive is blocked when an activity has upcoming confirmed bookings', func
     $schedule = $activity->schedules()->create([
         'date'       => now()->addDays(3)->toDateString(),
         'start_time' => '11:00:00',
+        'end_time'   => '12:00:00',
         'status'     => \App\Models\ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 

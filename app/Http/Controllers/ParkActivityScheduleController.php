@@ -44,7 +44,7 @@ class ParkActivityScheduleController extends Controller
         $data = $request->validate([
             'date' => ['required', 'date'],
             'start_time' => ['required', 'date_format:H:i:s'],
-            'end_time' => ['nullable', 'date_format:H:i:s', 'different:start_time'],
+            'end_time' => ['required', 'date_format:H:i:s', 'different:start_time'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
                 ParkActivitySchedule::STATUS_CANCELLED,
@@ -87,7 +87,7 @@ class ParkActivityScheduleController extends Controller
         $data = $request->validate([
             'date' => ['sometimes', 'date'],
             'start_time' => ['sometimes', 'date_format:H:i:s'],
-            'end_time' => ['sometimes', 'nullable', 'date_format:H:i:s'],
+            'end_time' => ['sometimes', 'date_format:H:i:s'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
                 ParkActivitySchedule::STATUS_CANCELLED,

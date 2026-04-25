@@ -6,6 +6,19 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
+/**
+ * Theme park activity. Two flavours:
+ *   - timed: is_all_day=false, duration is a UI default (in minutes) for new
+ *     schedules. Schedules carry their own start_time/end_time which are the
+ *     canonical window. Mutating duration does NOT shift existing schedules.
+ *   - all-day: is_all_day=true, duration is null. Drop-in any time during
+ *     park hours. The booking flow materializes a per-date schedule whose
+ *     window mirrors effectiveHoursOn(date).
+ *
+ * `duration` is intentionally not consumed at read time after the Model B
+ * redesign (DESD-95) — schedules are the source of truth for window
+ * semantics.
+ */
 class ParkActivity extends Model
 {
     use HasFactory, SoftDeletes;

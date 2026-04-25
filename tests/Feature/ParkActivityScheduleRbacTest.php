@@ -13,6 +13,7 @@ test('public can list park activity schedules without auth', function () {
     $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
@@ -25,6 +26,7 @@ test('public can view a single park activity schedule without auth', function ()
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
@@ -38,6 +40,7 @@ test('unauthenticated user cannot create a park activity schedule', function () 
     $this->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ])->assertUnauthorized();
 });
@@ -51,6 +54,7 @@ test('customer cannot create a park activity schedule', function () {
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
             'date' => '2026-06-01',
             'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
             'status' => ParkActivitySchedule::STATUS_SCHEDULED,
         ])
         ->assertForbidden();
@@ -65,6 +69,7 @@ test('park-manager can create a park activity schedule', function () {
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
             'date' => '2026-06-01',
             'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
             'status' => ParkActivitySchedule::STATUS_SCHEDULED,
         ])
         ->assertCreated()
@@ -80,6 +85,7 @@ test('superadmin can create a park activity schedule', function () {
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
             'date' => '2026-06-01',
             'start_time' => '10:00:00',
+            'end_time' => '11:00:00',
             'status' => ParkActivitySchedule::STATUS_COMPLETED,
         ])
         ->assertCreated()
@@ -92,6 +98,7 @@ test('park-manager can update a park activity schedule', function () {
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
     $manager = User::factory()->parkManager()->create();
@@ -110,6 +117,7 @@ test('park-manager cannot delete a park activity schedule', function () {
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
     $manager = User::factory()->parkManager()->create();
@@ -125,6 +133,7 @@ test('superadmin can delete a park activity schedule', function () {
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
     $admin = User::factory()->superadmin()->create();
@@ -134,7 +143,7 @@ test('superadmin can delete a park activity schedule', function () {
         ->assertNoContent();
 });
 
-test('end_time is derived from activity duration when column is null', function () {
+test('end_time is read directly from the column (Model B canonical)', function () {
     $park = ThemePark::factory()->create();
     $activity = ParkActivity::factory()->create([
         'park_id' => $park->id,
@@ -144,6 +153,7 @@ test('end_time is derived from activity duration when column is null', function 
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '09:45:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
@@ -151,10 +161,10 @@ test('end_time is derived from activity duration when column is null', function 
         ->assertOk()
         ->assertJsonPath('data.start_time', '09:00:00')
         ->assertJsonPath('data.end_time', '09:45:00')
-        ->assertJsonPath('data.end_time_source', 'derived');
+        ->assertJsonPath('data.end_time_source', 'explicit');
 });
 
-test('derived end_time wraps past midnight', function () {
+test('overnight end_time stored verbatim and emitted as-is', function () {
     $park = ThemePark::factory()->create();
     $activity = ParkActivity::factory()->create([
         'park_id' => $park->id,
@@ -164,6 +174,7 @@ test('derived end_time wraps past midnight', function () {
     $schedule = $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '22:00:00',
+        'end_time' => '03:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
@@ -172,7 +183,7 @@ test('derived end_time wraps past midnight', function () {
         ->assertJsonPath('data.end_time', '03:00:00');
 });
 
-test('explicit end_time overrides derivation', function () {
+test('explicit end_time is stored as posted', function () {
     $park = ThemePark::factory()->create();
     $activity = ParkActivity::factory()->create([
         'park_id' => $park->id,
@@ -192,23 +203,18 @@ test('explicit end_time overrides derivation', function () {
         ->assertJsonPath('data.end_time_source', 'explicit');
 });
 
-test('end_time is null when activity has no duration and none is supplied', function () {
+test('create rejects missing end_time', function () {
     $park = ThemePark::factory()->create();
-    $activity = ParkActivity::factory()->create([
-        'park_id' => $park->id,
-        'duration' => null,
-        'is_all_day' => true,
-    ]);
-    $schedule = $activity->schedules()->create([
-        'date' => '2026-06-01',
-        'start_time' => '09:00:00',
-        'status' => ParkActivitySchedule::STATUS_SCHEDULED,
-    ]);
+    $activity = ParkActivity::factory()->create(['park_id' => $park->id]);
+    $manager = User::factory()->parkManager()->create();
 
-    getJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules/{$schedule->id}")
-        ->assertOk()
-        ->assertJsonPath('data.end_time', null)
-        ->assertJsonPath('data.end_time_source', null);
+    $this->actingAs($manager)
+        ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
+            'date' => '2026-06-01',
+            'start_time' => '09:00:00',
+        ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('end_time');
 });
 
 test('create rejects end_time equal to start_time', function () {
@@ -247,6 +253,7 @@ test('duplicate date+start_time is rejected', function () {
     $activity->schedules()->create([
         'date' => '2026-06-01',
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
     ]);
     $manager = User::factory()->parkManager()->create();
 
@@ -254,6 +261,7 @@ test('duplicate date+start_time is rejected', function () {
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
             'date' => '2026-06-01',
             'start_time' => '09:00:00',
+            'end_time' => '10:00:00',
         ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors('start_time');
@@ -265,6 +273,7 @@ test('superadmin can archive a schedule (soft-delete)', function () {
     $schedule = $activity->schedules()->create([
         'date' => '2026-07-01',
         'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
     $admin = User::factory()->superadmin()->create();
@@ -282,6 +291,7 @@ test('archive is blocked when a schedule has upcoming confirmed bookings', funct
     $schedule = $activity->schedules()->create([
         'date' => now()->addDays(5)->toDateString(),
         'start_time' => '12:00:00',
+        'end_time' => '13:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
@@ -312,6 +322,7 @@ test('schedule slot can be reused after the original is archived', function () {
     $old = $activity->schedules()->create([
         'date' => '2026-08-15',
         'start_time' => '14:00:00',
+        'end_time' => '15:00:00',
         'status' => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
     $old->delete();
@@ -322,6 +333,7 @@ test('schedule slot can be reused after the original is archived', function () {
         ->postJson("/api/theme-parks/{$park->id}/activities/{$activity->id}/schedules", [
             'date' => '2026-08-15',
             'start_time' => '14:00:00',
+            'end_time' => '15:00:00',
         ])
         ->assertCreated();
 });

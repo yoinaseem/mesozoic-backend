@@ -98,6 +98,7 @@ function paActivityScheduleOn(
     return $activity->schedules()->create([
         'date' => $date,
         'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
         'status' => $status,
     ]);
 }
@@ -628,6 +629,7 @@ test('historical activity booking serializes its archived schedule+activity+park
     $schedule = $activity->schedules()->create([
         'date'       => $checkIn,
         'start_time' => '10:00:00',
+        'end_time'   => '11:00:00',
         'status'     => ParkActivitySchedule::STATUS_SCHEDULED,
     ]);
 
