@@ -11,7 +11,9 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ParkActivityScheduleController extends Controller
 {
@@ -41,19 +43,7 @@ class ParkActivityScheduleController extends Controller
 
         $data = $request->validate([
             'date' => ['required', 'date'],
-            'start_time' => [
-                'required',
-                'date_format:H:i:s',
-                function ($attribute, $value, $fail) use ($parkActivity, $request) {
-                    $exists = $parkActivity->schedules()
-                        ->whereDate('date', $request->input('date'))
-                        ->where('start_time', $value)
-                        ->exists();
-                    if ($exists) {
-                        $fail('A schedule already exists at this date and time.');
-                    }
-                },
-            ],
+            'start_time' => ['required', 'date_format:H:i:s'],
             'end_time' => ['nullable', 'date_format:H:i:s', 'different:start_time'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
@@ -63,10 +53,27 @@ class ParkActivityScheduleController extends Controller
             'notes' => ['nullable', 'string'],
         ]);
 
-        $schedule = $parkActivity->schedules()->create($data);
-        $schedule->setRelation('parkActivity', $parkActivity);
+        return DB::transaction(function () use ($parkActivity, $data) {
+            $activity = ParkActivity::query()
+                ->whereKey($parkActivity->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        return (new ParkActivityScheduleResource($schedule))->response()->setStatusCode(201);
+            $duplicate = $activity->schedules()
+                ->whereDate('date', $data['date'])
+                ->where('start_time', $data['start_time'])
+                ->exists();
+            if ($duplicate) {
+                throw ValidationException::withMessages([
+                    'start_time' => 'A schedule already exists at this date and time.',
+                ]);
+            }
+
+            $schedule = $activity->schedules()->create($data);
+            $schedule->setRelation('parkActivity', $activity);
+
+            return (new ParkActivityScheduleResource($schedule))->response()->setStatusCode(201);
+        });
     }
 
     public function update(
@@ -77,24 +84,9 @@ class ParkActivityScheduleController extends Controller
     ): ParkActivityScheduleResource {
         $this->authorize('update', $schedule);
 
-        $effectiveDate = $request->input('date', $schedule->date?->format('Y-m-d'));
-
         $data = $request->validate([
             'date' => ['sometimes', 'date'],
-            'start_time' => [
-                'sometimes',
-                'date_format:H:i:s',
-                function ($attribute, $value, $fail) use ($parkActivity, $schedule, $effectiveDate) {
-                    $exists = $parkActivity->schedules()
-                        ->whereDate('date', $effectiveDate)
-                        ->where('start_time', $value)
-                        ->where('id', '!=', $schedule->id)
-                        ->exists();
-                    if ($exists) {
-                        $fail('A schedule already exists at this date and time.');
-                    }
-                },
-            ],
+            'start_time' => ['sometimes', 'date_format:H:i:s'],
             'end_time' => ['sometimes', 'nullable', 'date_format:H:i:s'],
             'status' => ['sometimes', Rule::in([
                 ParkActivitySchedule::STATUS_SCHEDULED,
@@ -107,15 +99,36 @@ class ParkActivityScheduleController extends Controller
         $effectiveStart = array_key_exists('start_time', $data) ? $data['start_time'] : $schedule->start_time;
         $effectiveEnd = array_key_exists('end_time', $data) ? $data['end_time'] : $schedule->end_time;
         if ($effectiveEnd !== null && $effectiveEnd === $effectiveStart) {
-            throw \Illuminate\Validation\ValidationException::withMessages([
+            throw ValidationException::withMessages([
                 'end_time' => 'The end time must be different from the start time.',
             ]);
         }
 
-        $schedule->update($data);
-        $schedule->setRelation('parkActivity', $parkActivity);
+        return DB::transaction(function () use ($parkActivity, $schedule, $data) {
+            $activity = ParkActivity::query()
+                ->whereKey($parkActivity->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        return new ParkActivityScheduleResource($schedule);
+            $effectiveDate = $data['date'] ?? $schedule->date?->format('Y-m-d');
+            $effectiveStartTime = $data['start_time'] ?? $schedule->start_time;
+
+            $duplicate = $activity->schedules()
+                ->whereDate('date', $effectiveDate)
+                ->where('start_time', $effectiveStartTime)
+                ->where('id', '!=', $schedule->id)
+                ->exists();
+            if ($duplicate) {
+                throw ValidationException::withMessages([
+                    'start_time' => 'A schedule already exists at this date and time.',
+                ]);
+            }
+
+            $schedule->update($data);
+            $schedule->setRelation('parkActivity', $activity);
+
+            return new ParkActivityScheduleResource($schedule);
+        });
     }
 
     public function destroy(

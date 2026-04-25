@@ -10,6 +10,7 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -76,26 +77,32 @@ class ParkBookingController extends Controller
         ]);
 
         $reservation = Reservation::findOrFail($data['reservation_id']);
-        $park        = ThemePark::findOrFail($data['park_id']);
-
         $this->assertReservationOwnedByCaller($user, $reservation);
-        $this->assertReservationActiveOn($reservation, $data['date'], $data['guests']);
-        $this->assertParkOpenOn($park, $data['date']);
-        $this->assertNoDuplicatePerPark($reservation->id, $park->id, $data['date']);
-        $this->assertParkCapacityAvailable($park, $data['date'], $data['guests']);
 
-        $pricePerGuest = $park->price;
-        $totalPrice    = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+        $booking = DB::transaction(function () use ($reservation, $data) {
+            $park = ThemePark::query()
+                ->whereKey($data['park_id'])
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $booking = ParkBooking::create([
-            'reservation_id'  => $reservation->id,
-            'park_id'         => $park->id,
-            'date'            => $data['date'],
-            'guests'          => $data['guests'],
-            'status'          => 'confirmed',
-            'price_per_guest' => $pricePerGuest,
-            'total_price'     => $totalPrice,
-        ]);
+            $this->assertReservationActiveOn($reservation, $data['date'], $data['guests']);
+            $this->assertParkOpenOn($park, $data['date']);
+            $this->assertNoDuplicatePerPark($reservation->id, $park->id, $data['date']);
+            $this->assertParkCapacityAvailable($park, $data['date'], $data['guests']);
+
+            $pricePerGuest = $park->price;
+            $totalPrice    = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+
+            return ParkBooking::create([
+                'reservation_id'  => $reservation->id,
+                'park_id'         => $park->id,
+                'date'            => $data['date'],
+                'guests'          => $data['guests'],
+                'status'          => 'confirmed',
+                'price_per_guest' => $pricePerGuest,
+                'total_price'     => $totalPrice,
+            ]);
+        });
 
         return (new ParkBookingResource(
             $booking->load([
@@ -118,43 +125,52 @@ class ParkBookingController extends Controller
         $dateChanges   = array_key_exists('date', $data);
         $guestsChanges = array_key_exists('guests', $data);
 
-        if ($dateChanges || $guestsChanges) {
-            $date   = $data['date']   ?? $parkBooking->date->toDateString();
-            $guests = $data['guests'] ?? $parkBooking->guests;
-
-            $this->assertReservationActiveOn($parkBooking->reservation, $date, $guests);
-
-            if ($dateChanges) {
-                $this->assertParkOpenOn($parkBooking->park, $date);
-                $this->assertNoDuplicatePerPark(
-                    $parkBooking->reservation_id,
-                    $parkBooking->park_id,
-                    $date,
-                    $parkBooking->id,
-                );
-            }
-
-            $this->assertParkCapacityAvailable(
-                $parkBooking->park,
-                $date,
-                $guests,
-                $parkBooking->id,
-            );
-
-            if ($guestsChanges) {
-                $data['total_price'] = bcmul(
-                    (string) $parkBooking->price_per_guest,
-                    (string) $guests,
-                    2,
-                );
-            }
-        }
-
         if (($data['status'] ?? null) === 'cancelled' && $parkBooking->status !== 'cancelled') {
             $data['cancelled_at'] = now();
         }
 
-        $parkBooking->update($data);
+        if ($dateChanges || $guestsChanges) {
+            DB::transaction(function () use ($parkBooking, &$data, $dateChanges, $guestsChanges) {
+                $park = ThemePark::query()
+                    ->whereKey($parkBooking->park_id)
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $date   = $data['date']   ?? $parkBooking->date->toDateString();
+                $guests = $data['guests'] ?? $parkBooking->guests;
+
+                $this->assertReservationActiveOn($parkBooking->reservation, $date, $guests);
+
+                if ($dateChanges) {
+                    $this->assertParkOpenOn($park, $date);
+                    $this->assertNoDuplicatePerPark(
+                        $parkBooking->reservation_id,
+                        $parkBooking->park_id,
+                        $date,
+                        $parkBooking->id,
+                    );
+                }
+
+                $this->assertParkCapacityAvailable(
+                    $park,
+                    $date,
+                    $guests,
+                    $parkBooking->id,
+                );
+
+                if ($guestsChanges) {
+                    $data['total_price'] = bcmul(
+                        (string) $parkBooking->price_per_guest,
+                        (string) $guests,
+                        2,
+                    );
+                }
+
+                $parkBooking->update($data);
+            });
+        } else {
+            $parkBooking->update($data);
+        }
 
         return new ParkBookingResource(
             $parkBooking->load([

@@ -13,6 +13,7 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -88,34 +89,40 @@ class ParkActivityBookingController extends Controller
         ]);
 
         $reservation = Reservation::findOrFail($data['reservation_id']);
-        $schedule = ParkActivitySchedule::with('parkActivity.themePark')
-            ->findOrFail($data['park_activity_schedule_id']);
-
-        /** @var ParkActivity $activity */
-        $activity = $schedule->parkActivity;
-        /** @var ThemePark $park */
-        $park = $activity->themePark;
-        $scheduleDate = $schedule->date->toDateString();
-
         $this->assertReservationOwnedByCaller($user, $reservation);
-        $this->assertScheduleBookable($schedule);
-        $this->assertParkOpenOn($park, $scheduleDate);
-        $this->assertReservationActiveOn($reservation, $scheduleDate, $data['guests']);
-        $this->assertHoldsDayPass($reservation, $park, $scheduleDate, $data['guests']);
-        $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
-        $this->assertActivityCapacityAvailable($activity, $schedule, $data['guests']);
 
-        $pricePerGuest = $activity->price;
-        $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+        $booking = DB::transaction(function () use ($reservation, $data) {
+            $schedule = ParkActivitySchedule::query()
+                ->whereKey($data['park_activity_schedule_id'])
+                ->with('parkActivity.themePark')
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $booking = ParkActivityBooking::create([
-            'reservation_id' => $reservation->id,
-            'park_activity_schedule_id' => $schedule->id,
-            'guests' => $data['guests'],
-            'status' => 'confirmed',
-            'price_per_guest' => $pricePerGuest,
-            'total_price' => $totalPrice,
-        ]);
+            /** @var ParkActivity $activity */
+            $activity = $schedule->parkActivity;
+            /** @var ThemePark $park */
+            $park = $activity->themePark;
+            $scheduleDate = $schedule->date->toDateString();
+
+            $this->assertScheduleBookable($schedule);
+            $this->assertParkOpenOn($park, $scheduleDate);
+            $this->assertReservationActiveOn($reservation, $scheduleDate, $data['guests']);
+            $this->assertHoldsDayPass($reservation, $park, $scheduleDate, $data['guests']);
+            $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
+            $this->assertActivityCapacityAvailable($activity, $schedule, $data['guests']);
+
+            $pricePerGuest = $activity->price;
+            $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+
+            return ParkActivityBooking::create([
+                'reservation_id' => $reservation->id,
+                'park_activity_schedule_id' => $schedule->id,
+                'guests' => $data['guests'],
+                'status' => 'confirmed',
+                'price_per_guest' => $pricePerGuest,
+                'total_price' => $totalPrice,
+            ]);
+        });
 
         return (new ParkActivityBookingResource(
             $booking->load([
@@ -136,27 +143,36 @@ class ParkActivityBookingController extends Controller
             'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
-        if (array_key_exists('guests', $data)) {
-            $schedule = $parkActivityBooking->schedule()->with('parkActivity.themePark')->firstOrFail();
-            $activity = $schedule->parkActivity;
-            $scheduleDate = $schedule->date->toDateString();
-
-            $this->assertReservationActiveOn($parkActivityBooking->reservation, $scheduleDate, $data['guests']);
-            $this->assertHoldsDayPass($parkActivityBooking->reservation, $activity->themePark, $scheduleDate, $data['guests']);
-            $this->assertActivityCapacityAvailable($activity, $schedule, $data['guests'], $parkActivityBooking->id);
-
-            $data['total_price'] = bcmul(
-                (string) $parkActivityBooking->price_per_guest,
-                (string) $data['guests'],
-                2,
-            );
-        }
-
         if (($data['status'] ?? null) === 'cancelled' && $parkActivityBooking->status !== 'cancelled') {
             $data['cancelled_at'] = now();
         }
 
-        $parkActivityBooking->update($data);
+        if (array_key_exists('guests', $data)) {
+            DB::transaction(function () use ($parkActivityBooking, &$data) {
+                $schedule = ParkActivitySchedule::query()
+                    ->whereKey($parkActivityBooking->park_activity_schedule_id)
+                    ->with('parkActivity.themePark')
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $activity = $schedule->parkActivity;
+                $scheduleDate = $schedule->date->toDateString();
+
+                $this->assertReservationActiveOn($parkActivityBooking->reservation, $scheduleDate, $data['guests']);
+                $this->assertHoldsDayPass($parkActivityBooking->reservation, $activity->themePark, $scheduleDate, $data['guests']);
+                $this->assertActivityCapacityAvailable($activity, $schedule, $data['guests'], $parkActivityBooking->id);
+
+                $data['total_price'] = bcmul(
+                    (string) $parkActivityBooking->price_per_guest,
+                    (string) $data['guests'],
+                    2,
+                );
+
+                $parkActivityBooking->update($data);
+            });
+        } else {
+            $parkActivityBooking->update($data);
+        }
 
         return new ParkActivityBookingResource(
             $parkActivityBooking->load([
