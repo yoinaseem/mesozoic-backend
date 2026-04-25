@@ -14,6 +14,7 @@ class BeachActivityScheduleResource extends JsonResource
             'beach_activity_id' => $this->beach_activity_id,
             'activity_date' => $this->activity_date?->format('Y-m-d'),
             'start_time' => $this->start_time,
+            'end_time' => $this->end_time,
             'status' => $this->status,
             'activity' => new BeachActivityResource($this->whenLoaded('activity')),
             'created_at' => $this->created_at,

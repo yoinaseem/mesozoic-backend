@@ -74,6 +74,7 @@ function beachScheduleOn(string $date, int $capacity = 12, float $price = 75.0, 
     return $activity->schedules()->create([
         'activity_date' => $date,
         'start_time' => '09:00:00',
+        'end_time' => '10:00:00',
         'status' => $status,
     ]);
 }

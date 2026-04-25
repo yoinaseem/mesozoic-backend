@@ -36,6 +36,7 @@ class BeachActivityScheduleController extends Controller
         $data = $request->validate([
             'activity_date' => ['required', 'date', 'after_or_equal:today'],
             'start_time' => ['required', 'date_format:H:i:s'],
+            'end_time' => ['required', 'date_format:H:i:s', 'different:start_time'],
             'status' => ['sometimes', Rule::in([
                 BeachActivitySchedule::STATUS_PENDING,
                 BeachActivitySchedule::STATUS_CONFIRMED,
@@ -80,6 +81,7 @@ class BeachActivityScheduleController extends Controller
         $data = $request->validate([
             'activity_date' => ['sometimes', 'date'],
             'start_time' => ['sometimes', 'date_format:H:i:s'],
+            'end_time' => ['sometimes', 'date_format:H:i:s'],
             'status' => ['sometimes', Rule::in([
                 BeachActivitySchedule::STATUS_PENDING,
                 BeachActivitySchedule::STATUS_CONFIRMED,
@@ -93,6 +95,14 @@ class BeachActivityScheduleController extends Controller
         if (array_key_exists('activity_date', $data) && $data['activity_date'] < now()->toDateString()) {
             throw ValidationException::withMessages([
                 'activity_date' => ['Cannot move a schedule to a past date.'],
+            ]);
+        }
+
+        $effectiveStart = array_key_exists('start_time', $data) ? $data['start_time'] : $schedule->start_time;
+        $effectiveEnd = array_key_exists('end_time', $data) ? $data['end_time'] : $schedule->end_time;
+        if ($effectiveEnd === $effectiveStart) {
+            throw ValidationException::withMessages([
+                'end_time' => 'The end time must be different from the start time.',
             ]);
         }
 

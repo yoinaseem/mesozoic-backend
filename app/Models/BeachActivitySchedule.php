@@ -17,6 +17,7 @@ class BeachActivitySchedule extends Model
         'beach_activity_id',
         'activity_date',
         'start_time',
+        'end_time',
         'status',
     ];
 
