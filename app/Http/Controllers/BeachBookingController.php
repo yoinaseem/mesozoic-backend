@@ -123,12 +123,24 @@ class BeachBookingController extends Controller
             'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
-        if (($data['status'] ?? null) === 'cancelled' && $beachBooking->status !== 'cancelled') {
+        $cancelling = ($data['status'] ?? null) === 'cancelled' && $beachBooking->status !== 'cancelled';
+        $reconfirming = ($data['status'] ?? null) === 'confirmed' && $beachBooking->status !== 'confirmed';
+
+        if ($cancelling) {
             $data['cancelled_at'] = now();
+        } elseif ($reconfirming) {
+            $data['cancelled_at'] = null;
         }
 
-        if (array_key_exists('guests', $data)) {
-            DB::transaction(function () use ($beachBooking, &$data) {
+        // Reconfirming a previously-cancelled booking has the same race
+        // surface as creating a fresh confirmed one — capacity may have
+        // filled while it was cancelled, and the partial unique index
+        // beach_booking_unique_confirmed will throw a DB-level violation
+        // (500) if another confirmed row exists for the same
+        // (reservation, schedule) pair. Re-run the duplicate + capacity
+        // checks inside the schedule lock so the user sees a clean 422.
+        if (array_key_exists('guests', $data) || $reconfirming) {
+            DB::transaction(function () use ($beachBooking, &$data, $reconfirming) {
                 $schedule = BeachActivitySchedule::query()
                     ->whereKey($beachBooking->beach_activity_schedule_id)
                     ->with('activity')
@@ -136,15 +148,22 @@ class BeachBookingController extends Controller
                     ->firstOrFail();
 
                 $date = $schedule->activity_date->toDateString();
+                $effectiveGuests = $data['guests'] ?? $beachBooking->guests;
 
-                $this->assertReservationActiveOn($beachBooking->reservation, $date, $data['guests']);
-                $this->assertScheduleCapacityAvailable($schedule, $data['guests'], $beachBooking->id);
+                if ($reconfirming) {
+                    $this->assertReconfirmable($beachBooking);
+                }
 
-                $data['total_price'] = bcmul(
-                    (string) $beachBooking->price_per_guest,
-                    (string) $data['guests'],
-                    2,
-                );
+                $this->assertReservationActiveOn($beachBooking->reservation, $date, $effectiveGuests);
+                $this->assertScheduleCapacityAvailable($schedule, $effectiveGuests, $beachBooking->id);
+
+                if (array_key_exists('guests', $data)) {
+                    $data['total_price'] = bcmul(
+                        (string) $beachBooking->price_per_guest,
+                        (string) $data['guests'],
+                        2,
+                    );
+                }
 
                 $beachBooking->update($data);
             });
@@ -222,6 +241,30 @@ class BeachBookingController extends Controller
         if ($guests > $pool) {
             throw ValidationException::withMessages([
                 'guests' => ["Guests exceed the reservation's seat pool of {$pool} on this date."],
+            ]);
+        }
+    }
+
+    /**
+     * Reconfirming a cancelled booking can only succeed if no OTHER
+     * confirmed booking exists for the same (reservation, schedule). If
+     * one does, beach_booking_unique_confirmed (introduced in DESD-97
+     * commit 1) would fire a unique-violation. Translate to a clean 422
+     * on the `status` field rather than letting the QueryException bubble
+     * to a 500.
+     */
+    private function assertReconfirmable(BeachBooking $booking): void
+    {
+        $conflict = BeachBooking::query()
+            ->where('reservation_id', $booking->reservation_id)
+            ->where('beach_activity_schedule_id', $booking->beach_activity_schedule_id)
+            ->where('id', '!=', $booking->id)
+            ->where('status', 'confirmed')
+            ->exists();
+
+        if ($conflict) {
+            throw ValidationException::withMessages([
+                'status' => ['Another confirmed booking exists for this reservation on this schedule. Cancel that one before reconfirming this one.'],
             ]);
         }
     }

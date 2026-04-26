@@ -101,8 +101,16 @@ class BeachActivityScheduleController extends Controller
     ): BeachActivityScheduleResource {
         $this->authorize('update', $schedule);
 
+        // `after_or_equal:today` parses both sides via Carbon, so non-ISO
+        // formats (e.g. `12/31/2099`) compare correctly. The previous
+        // raw-string comparison in a manual block below was lexicographic
+        // and incorrectly rejected valid future dates whose string
+        // representation sorted before today's ISO date. The `'sometimes'`
+        // qualifier means status / notes updates on past schedules still
+        // pass when activity_date is omitted — only changing the field
+        // itself triggers the today-or-later rule.
         $data = $request->validate([
-            'activity_date' => ['sometimes', 'date'],
+            'activity_date' => ['sometimes', 'date', 'after_or_equal:today'],
             'start_time' => ['sometimes', 'date_format:H:i:s'],
             'end_time' => ['sometimes', 'date_format:H:i:s'],
             'status' => ['sometimes', Rule::in([
@@ -111,15 +119,6 @@ class BeachActivityScheduleController extends Controller
                 BeachActivitySchedule::STATUS_CANCELLED,
             ])],
         ]);
-
-        // Past-date guard: only blocks moving the activity_date itself to a
-        // past value. Status / future fields on past schedules remain editable
-        // for cleanup.
-        if (array_key_exists('activity_date', $data) && $data['activity_date'] < now()->toDateString()) {
-            throw ValidationException::withMessages([
-                'activity_date' => ['Cannot move a schedule to a past date.'],
-            ]);
-        }
 
         $effectiveStart = array_key_exists('start_time', $data) ? $data['start_time'] : $schedule->start_time;
         $effectiveEnd = array_key_exists('end_time', $data) ? $data['end_time'] : $schedule->end_time;

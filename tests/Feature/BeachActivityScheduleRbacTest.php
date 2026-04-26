@@ -168,6 +168,29 @@ test('moving a schedule to a past activity_date via update is rejected', functio
         ->assertJsonValidationErrors('activity_date');
 });
 
+// DESD-97 hotfix: past-date guard must compare parsed dates, not raw strings.
+// `12/31/2099` is far in the future but lexicographically sorts before today's
+// ISO date — the original raw-string `<` comparison incorrectly rejected it
+// as past. The validator-driven `after_or_equal:today` parses both sides
+// through Carbon so the comparison is correct.
+test('moving a schedule to a future non-ISO activity_date is accepted (regression)', function () {
+    $activity = BeachActivity::factory()->create();
+    $schedule = $activity->schedules()->create([
+        'activity_date' => now()->addDays(5)->toDateString(),
+        'start_time' => '10:00:00',
+        'end_time' => '11:00:00',
+        'status' => BeachActivitySchedule::STATUS_PENDING,
+    ]);
+    $manager = User::factory()->beachManager()->create();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/beach-activities/{$activity->id}/schedules/{$schedule->id}", [
+            'activity_date' => '12/31/2099',
+        ])
+        ->assertOk()
+        ->assertJsonPath('data.activity_date', '2099-12-31');
+});
+
 test('status-only update on a past schedule succeeds', function () {
     $activity = BeachActivity::factory()->create();
     $schedule = $activity->schedules()->create([

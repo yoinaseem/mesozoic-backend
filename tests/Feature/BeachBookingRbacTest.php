@@ -476,3 +476,64 @@ test('customer index only returns their own beach bookings', function () {
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.reservation_id', $rMine->id);
 });
+
+// DESD-97 hotfix: reconfirming a cancelled booking must not 500 on the partial unique
+
+test('reconfirming a cancelled booking returns 422 when slot has a confirmed re-book', function () {
+    $customer = beachCustomer();
+    [$reservation, $checkIn] = beachSingleRoomReservation($customer);
+    $schedule = beachScheduleOn($checkIn);
+
+    $cancelled = BeachBooking::create([
+        'reservation_id' => $reservation->id,
+        'beach_activity_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'cancelled',
+        'cancelled_at' => now(),
+        'price_per_guest' => $schedule->activity->price,
+        'total_price' => (float) $schedule->activity->price * 2,
+    ]);
+
+    BeachBooking::create([
+        'reservation_id' => $reservation->id,
+        'beach_activity_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'confirmed',
+        'price_per_guest' => $schedule->activity->price,
+        'total_price' => (float) $schedule->activity->price * 2,
+    ]);
+
+    $manager = beachManagerUser();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/beach-bookings/{$cancelled->id}", ['status' => 'confirmed'])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors('status');
+
+    expect($cancelled->fresh()->status)->toBe('cancelled');
+});
+
+test('reconfirming a cancelled booking succeeds when slot is free', function () {
+    $customer = beachCustomer();
+    [$reservation, $checkIn] = beachSingleRoomReservation($customer);
+    $schedule = beachScheduleOn($checkIn);
+
+    $cancelled = BeachBooking::create([
+        'reservation_id' => $reservation->id,
+        'beach_activity_schedule_id' => $schedule->id,
+        'guests' => 2,
+        'status' => 'cancelled',
+        'cancelled_at' => now(),
+        'price_per_guest' => $schedule->activity->price,
+        'total_price' => (float) $schedule->activity->price * 2,
+    ]);
+
+    $manager = beachManagerUser();
+
+    $this->actingAs($manager)
+        ->patchJson("/api/beach-bookings/{$cancelled->id}", ['status' => 'confirmed'])
+        ->assertOk()
+        ->assertJsonPath('data.status', 'confirmed');
+
+    expect($cancelled->fresh()->cancelled_at)->toBeNull();
+});
