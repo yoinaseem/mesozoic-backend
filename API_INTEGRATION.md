@@ -430,6 +430,7 @@ Plus a controller-level check: arrival datetime (`arrival_date + arrival_time`) 
   "beach_activity_id": 3,
   "activity_date": "2026-05-04",
   "start_time": "09:30:00",
+  "end_time": "11:00:00",   // canonical (Model B) since DESD-97 — both stored on the schedule row, NOT NULL
   "status": "pending",       // pending | confirmed | cancelled
   "activity": { /* BeachActivityResource if eager-loaded */ },
   "created_at": "...",
@@ -453,10 +454,12 @@ name        string max:255 required
 description string nullable
 price       numeric min:0 required
 capacity    integer min:1 required
-duration    integer min:1 required   // minutes
+duration    integer min:1 required   // minutes — UI default for new schedules only since DESD-97; never consumed at read time
 image       string max:255 nullable
 ```
 `PATCH`: same with `sometimes`.
+
+**`duration` is a UI default since DESD-97.** Mutating an activity's `duration` no longer shifts existing schedules — schedule `start_time` / `end_time` are canonical (Model B). Treat `duration` as a prefill hint when authoring new schedules.
 
 ##### Beach Activity Schedules (nested)
 
@@ -472,11 +475,21 @@ Path prefix: `/beach-activities/{beach_activity}/schedules`. Scope-bound, so the
 
 Validation `POST`:
 ```
-activity_date required, date
-start_time    required, H:i:s, unique per (beach_activity_id, activity_date)
-status        optional, in:pending,confirmed,cancelled  (default: pending)
+activity_date  required, date, after_or_equal:today                      (DESD-97)
+start_time     required, H:i:s
+end_time       required, H:i:s, different:start_time                     (DESD-97: canonical column, NOT NULL)
+status         optional, in:pending,confirmed,cancelled  (default: pending)
 ```
-`PATCH`: every field `sometimes`; unique-time check ignores the current schedule.
+
+**Server-side business rules** (each returns `422` with the listed key):
+- **Slot uniqueness** (`errors.start_time`): no other live (non-cancelled) schedule of this activity has the same `(activity_date, start_time)`. Cancelled rows logically vacate their slot — a new live schedule can take a cancelled slot back.
+- **No overlap** (`errors.start_time`, DESD-97): no other live schedule of the same activity overlaps `[start_time, end_time)`. Half-open intervals (back-to-back schedules don't conflict). Date-aware overnight math: an `end < start` schedule wraps to `date+1`, so a `D-1` overnight schedule is correctly compared against a `D` early-morning candidate.
+
+`PATCH`: every field `sometimes`. The slot-uniqueness and overlap checks re-run when any of `activity_date` / `start_time` / `end_time` changes. **Past-date guard (DESD-97)**: `activity_date` carries `after_or_equal:today` on update too; status / notes updates on past schedules remain allowed when `activity_date` is omitted from the payload.
+
+**Slot uniqueness (DESD-97).** Enforced at three layers: (1) overlap check via `BeachScheduleReconciler`, which rejects any `[start, end)` overlapping another live schedule of the same activity (a strict superset of exact-match duplicates); (2) controller-level closure-uniqueness check inside the `DB::transaction` + `lockForUpdate` critical section, retained for a friendlier 422 message on exact slot collisions; (3) Postgres partial unique index `beach_activity_schedule_unique_slot` on `(beach_activity_id, activity_date, start_time) WHERE status <> 'cancelled'` — the race-safe DB backstop. A new schedule can reuse the slot of a cancelled schedule because the index excludes them; live duplicates and overlaps still return `422 errors.start_time`.
+
+**Race-safety (DESD-97).** Booking and schedule writes run inside `DB::transaction` with `lockForUpdate()` on the parent (schedule for bookings, activity for schedules) so concurrent submissions can't both pass count-then-insert capacity / uniqueness checks.
 
 ---
 
@@ -1004,11 +1017,15 @@ Validation `PATCH`:
 status  sometimes, in:confirmed,cancelled
 guests  sometimes, integer, min:1
 ```
-If `guests` changes, seat-pool and capacity checks are re-run. `total_price` is recomputed. Setting `status=cancelled` also sets `cancelled_at = now()`. The schedule is not swappable on PATCH — cancel and re-book to change slots.
+If `guests` changes, seat-pool and capacity checks are re-run inside the schedule lock. `total_price` is recomputed. Setting `status=cancelled` (from a non-cancelled state) also sets `cancelled_at = now()`. The schedule is not swappable on PATCH — cancel and re-book to change slots.
+
+**Reconfirming a cancelled booking (DESD-97 hotfix).** Setting `status=confirmed` on a previously-cancelled booking re-runs the duplicate + capacity checks inside the schedule lock and clears `cancelled_at` back to null. If another confirmed booking already exists for the same `(reservation, schedule)` pair (because the customer rebooked after the cancel), the response is `422 errors.status` rather than the 500 the partial unique would otherwise produce. Operator must cancel the rebook first, then reconfirm the original.
 
 `DELETE` — soft cancel (staff-only):
 - Sets `status=cancelled` and `cancelled_at=now()`; returns `204` with no body. Row preserved for audit.
 - A customer call returns `403` — only `beach-manager` / `superadmin` pass the policy.
+
+**Confirmed-booking duplicate index (DESD-97).** A Postgres partial unique on `beach_bookings (reservation_id, beach_activity_schedule_id) WHERE status='confirmed'` backs the controller-level duplicate check race-safely. Cancelled rows are excluded so re-book after staff-cancel still works.
 
 **Cancellation cascade** — same known gap as park bookings: cancelling the underlying `RoomBooking` does not auto-cancel attached beach bookings today.
 
