@@ -108,10 +108,38 @@ class FerryScheduleController extends Controller
         return new FerryScheduleResource($ferrySchedule->load('ferry'));
     }
 
-    public function destroy(FerrySchedule $ferrySchedule): JsonResponse
+    public function destroy(Request $request, FerrySchedule $ferrySchedule): JsonResponse
     {
-        $ferrySchedule->delete();
+        $onConflict = $request->input('on_conflict', 'reject');
+        if (! in_array($onConflict, ['reject', 'cascade'], true)) {
+            throw ValidationException::withMessages([
+                'on_conflict' => ['Invalid on_conflict mode.'],
+            ]);
+        }
 
-        return response()->json(null, 204);
+        $blocking = $ferrySchedule->bookings()->where('status', 'confirmed')->count();
+
+        if ($blocking > 0 && $onConflict !== 'cascade') {
+            return response()->json([
+                'message' => 'Cannot archive a ferry slot with confirmed bookings. Re-send with on_conflict=cascade to cancel them.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
+        $cascade = DB::transaction(function () use ($ferrySchedule) {
+            $bookingsCancelled = $ferrySchedule->bookings()
+                ->where('status', 'confirmed')
+                ->update(['status' => 'cancelled', 'cancelled_at' => now()]);
+
+            $ferrySchedule->delete();
+
+            return ['bookings_cancelled' => $bookingsCancelled];
+        });
+
+        if ($cascade['bookings_cancelled'] === 0) {
+            return response()->json(null, 204);
+        }
+
+        return response()->json(['cascade' => $cascade]);
     }
 }

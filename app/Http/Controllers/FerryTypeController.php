@@ -3,11 +3,16 @@
 namespace App\Http\Controllers;
 
 use App\Http\Resources\FerryTypeResource;
+use App\Models\Ferry;
+use App\Models\FerryBooking;
+use App\Models\FerrySchedule;
 use App\Models\FerryType;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class FerryTypeController extends Controller
 {
@@ -59,12 +64,56 @@ class FerryTypeController extends Controller
         return new FerryTypeResource($ferryType);
     }
 
-    public function destroy(FerryType $ferryType): JsonResponse
+    public function destroy(Request $request, FerryType $ferryType): JsonResponse
     {
         $this->authorize('delete', $ferryType);
 
-        $ferryType->delete();
+        $onConflict = $request->input('on_conflict', 'reject');
+        if (! in_array($onConflict, ['reject', 'cascade'], true)) {
+            throw ValidationException::withMessages([
+                'on_conflict' => ['Invalid on_conflict mode.'],
+            ]);
+        }
 
-        return response()->json(null, 204);
+        $blocking = FerryBooking::query()
+            ->where('status', 'confirmed')
+            ->whereHas('schedule.ferry', fn ($q) => $q->where('ferry_type_id', $ferryType->id))
+            ->count();
+
+        if ($blocking > 0 && $onConflict !== 'cascade') {
+            return response()->json([
+                'message' => 'Cannot archive a ferry type with confirmed bookings on its vessels. Re-send with on_conflict=cascade to cancel them.',
+                'blocking_bookings' => $blocking,
+            ], 409);
+        }
+
+        $cascade = DB::transaction(function () use ($ferryType) {
+            $ferryIds = $ferryType->ferries()->pluck('id');
+            $slotIds = FerrySchedule::query()->whereIn('ferry_id', $ferryIds)->pluck('id');
+
+            $bookingsCancelled = FerryBooking::query()
+                ->whereIn('ferry_schedule_id', $slotIds)
+                ->where('status', 'confirmed')
+                ->update(['status' => 'cancelled', 'cancelled_at' => now()]);
+
+            FerrySchedule::query()->whereIn('id', $slotIds)->delete();
+            Ferry::query()->whereIn('id', $ferryIds)->delete();
+
+            $ferryType->delete();
+
+            return [
+                'ferries_archived' => $ferryIds->count(),
+                'slots_archived' => $slotIds->count(),
+                'bookings_cancelled' => $bookingsCancelled,
+            ];
+        });
+
+        if ($cascade['bookings_cancelled'] === 0
+            && $cascade['slots_archived'] === 0
+            && $cascade['ferries_archived'] === 0) {
+            return response()->json(null, 204);
+        }
+
+        return response()->json(['cascade' => $cascade]);
     }
 }

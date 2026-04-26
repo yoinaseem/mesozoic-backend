@@ -655,6 +655,202 @@ test('cancelled booking does not block re-booking the same (slot, date) — part
     $this->actingAs($customer)->postJson('/api/ferry-bookings', $payload)->assertCreated();
 });
 
+test('deleting a slot with confirmed bookings returns 409 by default', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-schedules/{$slot->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+
+    expect(FerrySchedule::find($slot->id))->not->toBeNull();
+    expect(FerryBooking::query()->where('ferry_schedule_id', $slot->id)->where('status', 'confirmed')->count())->toBe(1);
+});
+
+test('deleting a slot with on_conflict=cascade soft-deletes the slot and cancels its bookings', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $slot = fbSlot(fbFerry());
+
+    $created = $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated()->json('data.id');
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-schedules/{$slot->id}", ['on_conflict' => 'cascade'])
+        ->assertOk()
+        ->assertJsonPath('cascade.bookings_cancelled', 1);
+
+    // Slot soft-deleted; default scope hides it but it still exists for audit.
+    expect(FerrySchedule::find($slot->id))->toBeNull();
+    expect(FerrySchedule::withTrashed()->find($slot->id))->not->toBeNull();
+
+    // Booking is cancelled, still references the slot.
+    $booking = FerryBooking::find($created);
+    expect($booking->status)->toBe('cancelled');
+    expect($booking->cancelled_at)->not->toBeNull();
+});
+
+test('deleting a slot with no bookings returns 204', function () {
+    $slot = fbSlot(fbFerry());
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-schedules/{$slot->id}")
+        ->assertNoContent();
+
+    expect(FerrySchedule::find($slot->id))->toBeNull();
+});
+
+test('deleting a ferry with confirmed bookings on its slots returns 409', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $ferry = fbFerry();
+    $slot = fbSlot($ferry);
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferries/{$ferry->id}")
+        ->assertStatus(409)
+        ->assertJsonPath('blocking_bookings', 1);
+});
+
+test('deleting a ferry with on_conflict=cascade archives the ferry, its slots, and cancels bookings', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $ferry = fbFerry();
+    $slotA = fbSlot($ferry, departureTime: '09:00:00');
+    $slotB = fbSlot($ferry, departureTime: '14:00:00');
+
+    foreach ([$slotA, $slotB] as $slot) {
+        $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+            'reservation_id' => $reservation->id,
+            'ferry_schedule_id' => $slot->id,
+            'travel_date' => $checkIn,
+            'guests' => 2,
+        ])->assertCreated();
+    }
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferries/{$ferry->id}", ['on_conflict' => 'cascade'])
+        ->assertOk()
+        ->assertJsonPath('cascade.bookings_cancelled', 2)
+        ->assertJsonPath('cascade.slots_archived', 2);
+
+    expect(Ferry::find($ferry->id))->toBeNull();
+    expect(Ferry::withTrashed()->find($ferry->id))->not->toBeNull();
+    expect(FerryBooking::query()->where('status', 'confirmed')->count())->toBe(0);
+});
+
+test('deleting a ferry-type cascade archives ferries, slots, and cancels bookings', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $ferry = fbFerry();
+    $slot = fbSlot($ferry);
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $type = $ferry->ferryType;
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-types/{$type->id}", ['on_conflict' => 'cascade'])
+        ->assertOk()
+        ->assertJsonPath('cascade.bookings_cancelled', 1)
+        ->assertJsonPath('cascade.ferries_archived', 1)
+        ->assertJsonPath('cascade.slots_archived', 1);
+
+    expect(FerryType::find($type->id))->toBeNull();
+    expect(Ferry::find($ferry->id))->toBeNull();
+    expect(FerrySchedule::find($slot->id))->toBeNull();
+});
+
+test('cancelled booking still serializes its archived slot via withTrashed', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $slot = fbSlot(fbFerry());
+
+    $bookingId = $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated()->json('data.id');
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-schedules/{$slot->id}", ['on_conflict' => 'cascade'])
+        ->assertOk();
+
+    $this->actingAs($admin)
+        ->getJson("/api/ferry-bookings/{$bookingId}")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'cancelled')
+        ->assertJsonPath('data.schedule.id', $slot->id);
+});
+
+test('archiving a slot frees its (ferry, departure_time) — operator can recreate it', function () {
+    $ferry = fbFerry();
+    $slot = fbSlot($ferry, departureTime: '09:00:00');
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->deleteJson("/api/ferry-schedules/{$slot->id}")
+        ->assertNoContent();
+
+    // Slot at the same (ferry, 09:00) should now be createable.
+    $this->actingAs($admin)
+        ->postJson('/api/ferry-schedules', [
+            'ferry_id' => $ferry->id,
+            'departure_time' => '09:00:00',
+            'arrival_time' => '11:00:00',
+            'departure_port' => 'Mainland',
+            'arrival_port' => 'Isla Nublar',
+        ])
+        ->assertCreated();
+});
+
 test('customer index only returns their own ferry bookings', function () {
     $me = fbCustomer();
     $other = fbCustomer();

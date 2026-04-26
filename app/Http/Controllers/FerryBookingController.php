@@ -27,7 +27,9 @@ class FerryBookingController extends Controller
 
         $query = FerryBooking::query()->with([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.ferry.ferryType',
+            'schedule' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType' => fn ($q) => $q->withTrashed(),
         ]);
 
         if ($user->hasRole('superadmin') || $user->hasRole('ferry-manager')) {
@@ -63,7 +65,9 @@ class FerryBookingController extends Controller
 
         $ferryBooking->load([
             'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.ferry.ferryType',
+            'schedule' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry' => fn ($q) => $q->withTrashed(),
+            'schedule.ferry.ferryType' => fn ($q) => $q->withTrashed(),
         ]);
 
         return new FerryBookingResource($ferryBooking);
