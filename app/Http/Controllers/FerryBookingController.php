@@ -12,6 +12,7 @@ use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 
@@ -81,30 +82,39 @@ class FerryBookingController extends Controller
         ]);
 
         $reservation = Reservation::findOrFail($data['reservation_id']);
-        $schedule = FerrySchedule::with('ferry.ferryType')->findOrFail($data['ferry_schedule_id']);
-
-        /** @var FerryType $type */
-        $type = $schedule->ferry->ferryType;
         $travelDate = $data['travel_date'];
 
         $this->assertReservationOwnedByCaller($user, $reservation);
         $this->assertParksOpenOn($travelDate);
-        $this->assertReservationCoversTravelDate($reservation, $travelDate, $data['guests']);
-        $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id, $travelDate);
-        $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests']);
 
-        $pricePerGuest = $type->price;
-        $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+        $booking = DB::transaction(function () use ($reservation, $data, $travelDate) {
+            /** @var FerrySchedule $schedule */
+            $schedule = FerrySchedule::query()
+                ->whereKey($data['ferry_schedule_id'])
+                ->with('ferry.ferryType')
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        $booking = FerryBooking::create([
-            'reservation_id' => $reservation->id,
-            'ferry_schedule_id' => $schedule->id,
-            'travel_date' => $travelDate,
-            'guests' => $data['guests'],
-            'status' => 'confirmed',
-            'price_per_guest' => $pricePerGuest,
-            'total_price' => $totalPrice,
-        ]);
+            /** @var FerryType $type */
+            $type = $schedule->ferry->ferryType;
+
+            $this->assertReservationCoversTravelDate($reservation, $travelDate, $data['guests']);
+            $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id, $travelDate);
+            $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests']);
+
+            $pricePerGuest = $type->price;
+            $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
+
+            return FerryBooking::create([
+                'reservation_id' => $reservation->id,
+                'ferry_schedule_id' => $schedule->id,
+                'travel_date' => $travelDate,
+                'guests' => $data['guests'],
+                'status' => 'confirmed',
+                'price_per_guest' => $pricePerGuest,
+                'total_price' => $totalPrice,
+            ]);
+        });
 
         return (new FerryBookingResource(
             $booking->load([
@@ -131,26 +141,36 @@ class FerryBookingController extends Controller
             'guests' => ['sometimes', 'integer', 'min:1'],
         ]);
 
-        if (array_key_exists('guests', $data)) {
-            $schedule = $ferryBooking->schedule()->with('ferry.ferryType')->firstOrFail();
-            $type = $schedule->ferry->ferryType;
-            $travelDate = $ferryBooking->travel_date->toDateString();
-
-            $this->assertReservationCoversTravelDate($ferryBooking->reservation, $travelDate, $data['guests']);
-            $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests'], $ferryBooking->id);
-
-            $data['total_price'] = bcmul(
-                (string) $ferryBooking->price_per_guest,
-                (string) $data['guests'],
-                2,
-            );
-        }
-
         if (($data['status'] ?? null) === 'cancelled' && $ferryBooking->status !== 'cancelled') {
             $data['cancelled_at'] = now();
         }
 
-        $ferryBooking->update($data);
+        if (array_key_exists('guests', $data)) {
+            DB::transaction(function () use ($ferryBooking, &$data) {
+                /** @var FerrySchedule $schedule */
+                $schedule = FerrySchedule::query()
+                    ->whereKey($ferryBooking->ferry_schedule_id)
+                    ->with('ferry.ferryType')
+                    ->lockForUpdate()
+                    ->firstOrFail();
+
+                $type = $schedule->ferry->ferryType;
+                $travelDate = $ferryBooking->travel_date->toDateString();
+
+                $this->assertReservationCoversTravelDate($ferryBooking->reservation, $travelDate, $data['guests']);
+                $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests'], $ferryBooking->id);
+
+                $data['total_price'] = bcmul(
+                    (string) $ferryBooking->price_per_guest,
+                    (string) $data['guests'],
+                    2,
+                );
+
+                $ferryBooking->update($data);
+            });
+        } else {
+            $ferryBooking->update($data);
+        }
 
         return new FerryBookingResource(
             $ferryBooking->load([

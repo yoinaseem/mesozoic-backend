@@ -629,6 +629,32 @@ test('ferry booking succeeds when park has baseline opening hours for the travel
     ])->assertCreated();
 });
 
+test('cancelled booking does not block re-booking the same (slot, date) — partial unique excludes cancelled', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $slot = fbSlot(fbFerry());
+
+    $payload = [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ];
+
+    // First booking succeeds.
+    $first = $this->actingAs($customer)->postJson('/api/ferry-bookings', $payload)
+        ->assertCreated()
+        ->json('data.id');
+
+    // Manager cancels it.
+    $manager = fbFerryManager();
+    $this->actingAs($manager)->deleteJson("/api/ferry-bookings/{$first}")->assertNoContent();
+
+    // Customer can rebook the same (reservation, slot, date) — cancelled rows
+    // don't trip the partial unique nor the controller-level duplicate guard.
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', $payload)->assertCreated();
+});
+
 test('customer index only returns their own ferry bookings', function () {
     $me = fbCustomer();
     $other = fbCustomer();
