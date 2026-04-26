@@ -4,6 +4,7 @@ use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\BeachActivityController;
 use App\Http\Controllers\BeachActivityScheduleController;
 use App\Http\Controllers\HotelAvailabilityController;
+use App\Http\Controllers\HotelAvailabilityDailyController;
 use App\Http\Controllers\BeachBookingController;
 use App\Http\Controllers\FerryBookingController;
 use App\Http\Controllers\FerryController;
@@ -34,6 +35,7 @@ Route::scopeBindings()->prefix('hotels/{hotel}')->group(function () {
     Route::apiResource('room-types', RoomTypeController::class)->only(['index', 'show']);
     Route::apiResource('rooms', RoomController::class)->only(['index', 'show']);
     Route::get('availability', HotelAvailabilityController::class);
+    Route::get('availability/daily', HotelAvailabilityDailyController::class);
 });
 
 // Public reads — beach activities and schedules are browsable without auth.

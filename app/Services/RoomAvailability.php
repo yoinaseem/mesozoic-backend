@@ -6,6 +6,7 @@ use App\Models\Hotel;
 use App\Models\Room;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 
 class RoomAvailability
@@ -148,5 +149,68 @@ class RoomAvailability
             'room_types' => $breakdown,
             'totals'     => $totals,
         ];
+    }
+
+    /**
+     * Per-room-type, per-night free counts for a hotel over [from, to).
+     *
+     * Drives calendar UIs that need to grey out fully-booked nights without
+     * a round-trip per date. Half-open semantics: a booking with
+     * check_out_date = D occupies nights up to D-1; D itself is free.
+     *
+     * Same fragmentation gap as forHotel(): free=2 every night across a
+     * range does not guarantee a single room is free for the whole range —
+     * it could be a different two rooms each night. The booking POST is
+     * the backstop. Acceptable for current scope.
+     */
+    public function forHotelDaily(Hotel $hotel, string $from, string $to): array
+    {
+        $fromDt = CarbonImmutable::parse($from)->startOfDay();
+        $toDt   = CarbonImmutable::parse($to)->startOfDay();
+
+        $nights = [];
+        for ($d = $fromDt; $d->lessThan($toDt); $d = $d->addDay()) {
+            $nights[] = $d->format('Y-m-d');
+        }
+
+        $roomTypes = $hotel->roomTypes()->orderBy('id')->get();
+        $totals = [];
+        foreach ($roomTypes as $rt) {
+            $totals[$rt->id] = Room::where('room_type_id', $rt->id)->count();
+        }
+
+        $bookings = RoomBooking::query()
+            ->where('hotel_id', $hotel->id)
+            ->where('status', 'confirmed')
+            ->whereDate('check_in_date', '<', $to)
+            ->whereDate('check_out_date', '>', $from)
+            ->get(['room_type_id', 'check_in_date', 'check_out_date']);
+
+        $booked = [];
+        foreach ($bookings as $b) {
+            $bIn  = CarbonImmutable::parse($b->check_in_date)->startOfDay();
+            $bOut = CarbonImmutable::parse($b->check_out_date)->startOfDay();
+            $start = $bIn->greaterThan($fromDt) ? $bIn : $fromDt;
+            $end   = $bOut->lessThan($toDt) ? $bOut : $toDt;
+            for ($d = $start; $d->lessThan($end); $d = $d->addDay()) {
+                $key = $d->format('Y-m-d');
+                $booked[$b->room_type_id][$key] = ($booked[$b->room_type_id][$key] ?? 0) + 1;
+            }
+        }
+
+        return $roomTypes->map(function (RoomType $rt) use ($nights, $totals, $booked) {
+            $total = $totals[$rt->id];
+            $days = array_map(fn (string $date) => [
+                'date' => $date,
+                'free' => max(0, $total - ($booked[$rt->id][$date] ?? 0)),
+            ], $nights);
+
+            return [
+                'room_type_id' => $rt->id,
+                'name'         => $rt->name,
+                'total'        => $total,
+                'days'         => $days,
+            ];
+        })->all();
     }
 }
