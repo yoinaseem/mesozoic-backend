@@ -301,11 +301,17 @@ room_no      string max:255 required, unique within {hotel} (live rooms only)
 
 #### 7. Ferry Types, Ferries & Ferry Schedules
 
-The ferry domain mirrors the Hotel/RoomType/Room shape: **`FerryType`** is the catalogue (price + capacity + description + image), **`Ferry`** is a physical vessel under a type (just `ferry_type_id + name`), and **`FerrySchedule`** is one departure of a vessel. Capacity and price always read through the type; vessels inherit both. Ferry bookings (§12) walk this chain to size capacity and compute totals.
+**Slot-shape redesign (DESD-100).** A `FerrySchedule` is now a **fixed slot** — a recurring departure window like "morning ferry 09:00→11:00", not a per-date row. One row per `(ferry_id, departure_time) WHERE deleted_at IS NULL`. The slot carries `departure_time + arrival_time + departure_port + arrival_port`. **No `travel_date`, no `arrival_date`, no per-trip `status`.** Customers pick a `(slot, date)` pair at booking time (§15); the date lives on `FerryBooking.travel_date`.
 
-All ferry-side mutations are gated by `ferry.create | ferry.update | ferry.delete` — `ferry-manager` and `superadmin` can mutate vessels, types, and schedules. (Earlier doc revisions noted these as permissive; that gap is now closed.)
+Domain shape:
 
-`status` enum on `FerrySchedule`: `scheduled` (default), `completed`, `cancelled`.
+- **`FerryType`** — catalogue (`name + description + image + capacity + price`). Price and capacity live here.
+- **`Ferry`** — a physical vessel under a type (`ferry_type_id + name`). Inherits price + capacity from its type.
+- **`FerrySchedule`** — a recurring slot for a vessel (`ferry_id + departure_time + arrival_time + departure_port + arrival_port`). Overnight crossings are encoded as `arrival_time < departure_time`.
+
+All ferry-side mutations are gated by `ferry.create | ferry.update | ferry.delete` — `ferry-manager` and `superadmin` can mutate vessels, types, and slots.
+
+**Soft-delete + cascade.** All three resources soft-delete (`deleted_at`); `DELETE` on any of them is **archival** with a hybrid 409 / `on_conflict=cascade` flow (mirrors DESD-95 / DESD-97). When confirmed bookings exist downstream, the default response is `409 {message, blocking_bookings}`; passing `on_conflict=cascade` in the request body cancels those bookings (`status=cancelled`, `cancelled_at=now()`), soft-deletes the row + descendants, and returns `200 {cascade: {…counts}}`. Empty-cascade deletes return `204` for back-compat. Soft-deleted slots vacate their `(ferry_id, departure_time)` pair so an operator can recreate a slot at the same time after archiving the original.
 
 ##### Ferry Types
 
@@ -331,7 +337,7 @@ All ferry-side mutations are gated by `ferry.create | ferry.update | ferry.delet
 | GET    | `/ferry-types/{ferry_type}` | public | — | includes `ferries` + `ferries_count` |
 | POST   | `/ferry-types` | bearer | `ferry.create\|ferry.update\|ferry.delete` | `ferry.create` |
 | PUT/PATCH | `/ferry-types/{ferry_type}` | bearer | (any) | `ferry.update` |
-| DELETE | `/ferry-types/{ferry_type}` | bearer | (any) | superadmin only (`FerryTypePolicy::delete` returns false) |
+| DELETE | `/ferry-types/{ferry_type}` | bearer | (any) | superadmin only (`FerryTypePolicy::delete` returns false) — archive + cascade |
 
 Validation `POST`:
 ```
@@ -342,6 +348,16 @@ capacity    integer min:1 required
 price       numeric min:0 required
 ```
 `PATCH`: every field `sometimes`.
+
+`DELETE` body:
+```
+on_conflict  optional, in:reject,cascade  (default: reject)
+```
+With confirmed bookings on any vessel of this type:
+- Default → `409 {message, blocking_bookings}`.
+- `on_conflict=cascade` → `200 {cascade: {ferries_archived, slots_archived, bookings_cancelled}}` after archiving the type, every ferry under it, every slot under those ferries, and cancelling all confirmed bookings.
+
+Empty cascade → `204`.
 
 ##### Ferries (vessels)
 
@@ -367,7 +383,7 @@ The vessel itself only carries `name` and the FK. Price and capacity live on the
 | GET    | `/ferries/{ferry}` | public | — | includes `ferry_type` + `schedules` + `schedules_count` |
 | POST   | `/ferries` | bearer | `ferry.create\|ferry.update\|ferry.delete` | `ferry.create` |
 | PUT/PATCH | `/ferries/{ferry}` | bearer | (any) | `ferry.update` |
-| DELETE | `/ferries/{ferry}` | bearer | (any) | superadmin only |
+| DELETE | `/ferries/{ferry}` | bearer | (any) | superadmin only — archive + cascade |
 
 Validation `POST`:
 ```
@@ -376,31 +392,66 @@ name           string max:255 required, unique per (ferry_type_id, name)
 ```
 `PATCH`: both fields `sometimes`; the composite-unique check still applies, ignoring the current ferry's id. If `ferry_type_id` is omitted on PATCH, the check uses the row's existing type. Duplicate `(ferry_type_id, name)` returns `422` with `errors.name` — the DB has a matching unique index as a backstop, but clients will only ever see the 422.
 
-##### Ferry Schedules
+`DELETE` body:
+```
+on_conflict  optional, in:reject,cascade  (default: reject)
+```
+With confirmed bookings on any of this ferry's slots:
+- Default → `409 {message, blocking_bookings}`.
+- `on_conflict=cascade` → `200 {cascade: {slots_archived, bookings_cancelled}}` after archiving the ferry + all its slots and cancelling those bookings.
+
+Empty cascade → `204`.
+
+##### Ferry Schedules (slots — DESD-100)
+
+A `FerrySchedule` is a recurring departure slot on a vessel. `FerryScheduleResource`:
+
+```json
+{
+  "id": 22,
+  "ferry_id": 9,
+  "departure_time": "09:00:00",
+  "arrival_time": "11:00:00",
+  "departure_port": "Mainland",
+  "arrival_port": "Isla Nublar",
+  "ferry": { /* FerryResource when eager-loaded */ },
+  "created_at": "...",
+  "updated_at": "..."
+}
+```
 
 | Method | Path | Auth | Permission |
 |---|---|---|---|
 | GET  | `/ferry-schedules` | public, paginated, includes `ferry` | — |
 | GET  | `/ferry-schedules/{ferry_schedule}` | public, includes `ferry` | — |
 | GET  | `/ferries/{ferry}/schedules` | public, paginated | — |
-| POST | `/ferry-schedules` | bearer | `ferry.create\|ferry.update\|ferry.delete` |
-| PUT/PATCH | `/ferry-schedules/{ferry_schedule}` | bearer | (any) |
-| DELETE | `/ferry-schedules/{ferry_schedule}` | bearer | (any) |
+| POST | `/ferry-schedules` | bearer | `ferry.create` |
+| PUT/PATCH | `/ferry-schedules/{ferry_schedule}` | bearer | `ferry.update` |
+| DELETE | `/ferry-schedules/{ferry_schedule}` | bearer | `ferry.delete` (superadmin) — archive + cascade |
 
 Validation `POST`:
 ```
 ferry_id        required, exists:ferries
-travel_date     required, date
-departure_time  required, H:i:s, unique per (ferry_id, travel_date)
-arrival_date    required, date, after_or_equal:travel_date
-arrival_time    required, H:i:s
+departure_time  required, H:i:s, unique per (ferry_id, departure_time) WHERE deleted_at IS NULL
+arrival_time    required, H:i:s, different:departure_time
 departure_port  required, string max:255
 arrival_port    required, string max:255
-status          optional, in:scheduled,completed,cancelled
 ```
-Plus a controller-level check: arrival datetime (`arrival_date + arrival_time`) must be strictly after departure datetime (`travel_date + departure_time`). Violations come back as `422` with `errors.arrival_time = ["The arrival datetime must be after the departure datetime."]`.
+Slot-uniqueness is enforced inside a `DB::transaction` with `lockForUpdate` on the parent `Ferry` so two concurrent slot-creates can't both pass the check. The DB-level partial unique `ferry_schedule_unique_slot` is the race-safe backstop.
 
-`PATCH`: every field `sometimes`. Unique-departure check still applies, ignoring the current schedule id.
+**Overnight crossings** are encoded as `arrival_time < departure_time` (Carbon overnight wrap on read). Same-time arrival/departure returns `422 errors.arrival_time`.
+
+`PATCH`: every field `sometimes`; slot-uniqueness check ignores the current row and falls back to the row's stored `ferry_id` when the field is omitted. Same `arrival != departure` check on effective values.
+
+`DELETE` body:
+```
+on_conflict  optional, in:reject,cascade  (default: reject)
+```
+With confirmed bookings on this slot:
+- Default → `409 {message, blocking_bookings}`.
+- `on_conflict=cascade` → `200 {cascade: {bookings_cancelled}}` after cancelling those bookings + soft-deleting the slot.
+
+Empty cascade → `204`. Soft-deleted slots are hidden from index/show but stay readable through booking eager-loads (`schedule` uses `withTrashed()` so cancelled-booking history keeps serializing the slot it ran against).
 
 ---
 
@@ -622,7 +673,9 @@ on_conflict  optional, in:reject,cascade (default: reject)
 ```
 Both times set → "open with explicit hours". Both `null` → "closed that day". Partial (one set, one null) → `422`. `PATCH`: every field `sometimes`; the both-or-neither check runs on effective values.
 
-**Hours-cascade (DESD-95).** Override create / update / delete may invalidate pre-existing `ParkActivitySchedule` rows on the affected date(s) — single date for create and delete, union of old + new dates for update if the `date` field changes. Same hybrid contract as Opening Hours: default `reject` returns `409` with the conflict report; `cascade` persists the mutation and chains into reconciler cleanup (cancel timed schedules + their bookings; re-sync `is_all_day` schedules whose date stays open). Closed-day overrides (`open_time=null`, `close_time=null`) cancel all schedules on that date under cascade. Successful response includes `cascade: { schedules_cancelled, bookings_cancelled, schedules_resynced }`. `DELETE` returns `204` when no cascade was needed and `200` with the cascade summary when schedules were cancelled; pass the mode as a query param: `?on_conflict=cascade`. Two delete cases that *can* narrow hours and surface a `409`: an override broader than baseline (e.g. extended-hours event day) and the only override on a park with no baseline configured (deleting it makes the date `not_configured`).
+**Hours-cascade (DESD-95).** Override create / update / delete may invalidate pre-existing `ParkActivitySchedule` rows on the affected date(s) — single date for create and delete, union of old + new dates for update if the `date` field changes. Same hybrid contract as Opening Hours: default `reject` returns `409` with the conflict report; `cascade` persists the mutation and chains into reconciler cleanup (cancel timed schedules + their bookings; re-sync `is_all_day` schedules whose date stays open). Closed-day overrides (`open_time=null`, `close_time=null`) cancel all schedules on that date under cascade. Successful response includes `cascade: { schedules_cancelled, bookings_cancelled, schedules_resynced, ferry_bookings_cancelled }`. `DELETE` returns `204` when no cascade was needed and `200` with the cascade summary when schedules were cancelled; pass the mode as a query param: `?on_conflict=cascade`. Two delete cases that *can* narrow hours and surface a `409`: an override broader than baseline (e.g. extended-hours event day) and the only override on a park with no baseline configured (deleting it makes the date `not_configured`).
+
+**Ferry-booking cascade (DESD-100).** The same cascade flow also reaches confirmed ferry bookings. If the override / baseline change makes a date park-closed (closed-day override, deletion of the override on a `not_configured` date, or a baseline edit that turns a date closed), confirmed `FerryBooking` rows on that date are reported in the `409` payload's `ferry_bookings: [{id, reservation_id, ferry_schedule_id, travel_date, guests}]` block (alongside `counts.ferry_bookings`) and, under `on_conflict=cascade`, get flipped to `status=cancelled` with `cancelled_at=now()`. The cascade summary on success carries `ferry_bookings_cancelled`. Ferries care about open-vs-closed only — narrowing the open window from `09:00–18:00` to `12:00–14:00` does **not** cascade-cancel ferry bookings.
 
 ##### Effective Hours (computed endpoint)
 
@@ -1119,17 +1172,21 @@ If `guests` changes, seat-pool, day-pass, and capacity checks are re-run; `total
 
 #### 15. Ferry Bookings
 
-A ferry booking is a trip ticket tied to a specific `FerrySchedule` (which pins a `Ferry` to `travel_date + departure_time` and carries `arrival_date/time + departure_port + arrival_port`). One booking covers `guests` people on that departure.
+A ferry booking is a trip ticket for `N` guests on a specific `(slot, date)` pair. The slot is a `FerrySchedule` row (a fixed departure window on a vessel — see §7); the date lives on the booking row as `travel_date`. **No per-date schedule rows.**
 
-**Divergence from on-island bookings — inclusive reservation window.** Park, beach, and park-activity bookings reject the check-out date because on-island service tickets use `seatPoolOn(date)` with exclusive checkout. Ferries are transport, so the check-out-day departure ferry is a primary use case. They use a sibling helper `Reservation::ferrySeatPoolOn(date)` with the inclusive window `check_in_date <= travel_date <= check_out_date`. Arrival-day ferries on `check_in_date` are bookable the same way.
+**Booking shape.** A customer with a confirmed `RoomBooking` covering `travel_date` picks any `FerrySchedule` slot and any date inside `[check_in_date, check_out_date]` (inclusive on both ends — arrival-day and departure-day ferries are primary use cases).
 
-**Auto-confirm on create.** If every rule passes (ownership, schedule bookable, reservation covers travel date, no duplicate, capacity), `status=confirmed` immediately. If the vessel is full, the booking is rejected with `"There is no available space on this ferry."`
+**Inclusive reservation window.** Park, beach, and park-activity bookings use `Reservation::seatPoolOn` with **exclusive** checkout (on-island tickets aren't sold on the day guests are leaving). Ferries use the sibling `Reservation::ferrySeatPoolOn` with `check_in_date <= travel_date <= check_out_date` so arrival- and departure-day ferries are bookable.
 
-**Cancellation is staff-only** (unified across every booking module — `ferry-manager` / `superadmin` only).
+**Park-closed-day rule (DESD-100).** Ferries don't run on dates the resort park is closed (any park returning `isOpenOn=false`). Booking attempts on a closed date return `422 errors.travel_date = ["Ferries are not available on this date because the park is closed."]`. Existing confirmed bookings on a date that subsequently closes via `ParkHourOverride` cascade-cancel — see §9 (hours-cascade).
 
-**No direction or port validation.** `departure_port` / `arrival_port` are free-text strings, so the server cannot classify a schedule as arrival vs. departure vs. inter-island. The frontend displays the schedule as-is.
+**Auto-confirm on create.** If every rule passes (ownership, park-open, reservation covers travel date, no duplicate, capacity), `status=confirmed` immediately. If the vessel is full for that `(slot, date)`, the booking is rejected with `"There is no available space on this ferry."`.
 
-**No round-trip coupling.** A reservation can hold any number of ferry bookings on different schedules — e.g. outbound + return on the same day are two separate bookings on two `FerrySchedule` rows.
+**Cancellation is staff-only** — unified across every booking module (`ferry-manager` / `superadmin` only).
+
+**No direction or port validation.** `departure_port` / `arrival_port` are free-text strings on the slot. The frontend renders them as authored.
+
+**No round-trip coupling.** A reservation can hold any number of ferry bookings — e.g. outbound + return on the same day are two `FerryBooking` rows against two different slots.
 
 `FerryBookingResource`:
 ```json
@@ -1137,13 +1194,14 @@ A ferry booking is a trip ticket tied to a specific `FerrySchedule` (which pins 
   "id": 77,
   "reservation_id": 7,
   "ferry_schedule_id": 22,
+  "travel_date": "2026-05-02",
   "guests": 2,
   "status": "confirmed",       // confirmed | cancelled
   "price_per_guest": "40.00",
   "total_price": "80.00",
   "cancelled_at": null,
   "reservation": { /* ReservationResource when eager-loaded */ },
-  "schedule":    { /* FerryScheduleResource when eager-loaded (includes `ferry`) */ },
+  "schedule":    { /* FerryScheduleResource when eager-loaded (includes `ferry` → `ferry_type`) */ },
   "created_at": "...",
   "updated_at": "..."
 }
@@ -1165,17 +1223,18 @@ Validation `POST`:
 ```
 reservation_id     required, exists:reservations
 ferry_schedule_id  required, exists:ferry_schedules
+travel_date        required, date, after_or_equal:today
 guests             required, integer, min:1
 ```
 
-Business rules enforced in `FerryBookingController::store`:
+Business rules enforced in `FerryBookingController::store` (post-validation + inside `DB::transaction` with `lockForUpdate` on the slot row):
 
 - **Ownership** (`errors.reservation_id`): reservation must belong to the caller (superadmin / ferry-manager bypass).
-- **Schedule bookable** (`errors.ferry_schedule_id`): schedule `status === 'scheduled'` (not `cancelled` / `completed`) and `travel_date >= today`.
-- **Reservation covers travel date** (`errors.ferry_schedule_id`): `Reservation::ferrySeatPoolOn(travel_date) > 0` with inclusive check-in + check-out.
+- **Park open** (`errors.travel_date`): every `ThemePark` returns `isOpenOn(travel_date) === true`. Closed via override → reject; `not_configured` → reject.
+- **Reservation covers travel date** (`errors.travel_date`): `Reservation::ferrySeatPoolOn(travel_date) > 0` with inclusive window.
 - **Seat pool cap** (`errors.guests`): `guests <= ferrySeatPoolOn(travel_date)`.
-- **Uniqueness** (`errors.ferry_schedule_id`): no existing confirmed `FerryBooking` for `(reservation_id, ferry_schedule_id)`. Same ferry on the same date at a different departure time is a different schedule → allowed.
-- **Capacity** (`errors.ferry_schedule_id`): `Σ confirmed guests on the schedule + guests <= ferry.ferry_type.capacity`. Capacity lives on the type after the Hotel/RoomType-style restructure — vessels inherit it. Error message: `"There is no available space on this ferry."`
+- **Uniqueness** (`errors.ferry_schedule_id`): no existing confirmed `FerryBooking` for the same `(reservation_id, ferry_schedule_id, travel_date)`. Same slot on a *different* date is fine; a same-day round trip on two different slots is fine. DB-level race-safe backstop: partial unique `ferry_booking_unique_confirmed (reservation_id, ferry_schedule_id, travel_date) WHERE status='confirmed'`.
+- **Capacity** (`errors.ferry_schedule_id`): `Σ confirmed guests on (ferry_schedule_id, travel_date) + guests <= ferry.ferry_type.capacity`. Capacity lives on the type — vessels inherit it. Error message: `"There is no available space on this ferry."`. **Capacity is per-date** — a slot that's full on Monday is independently bookable on Tuesday.
 
 On create, `price_per_guest = ferry.ferry_type.price`, `total_price = bcmul(price_per_guest, guests, 2)`. Rows default to `status="confirmed"`.
 
@@ -1184,18 +1243,25 @@ Validation `PATCH`:
 status  sometimes, in:confirmed,cancelled
 guests  sometimes, integer, min:1
 ```
-If `guests` changes, seat-pool and capacity checks are re-run; `total_price` is recomputed. Schedule swap is not supported on PATCH.
+If `guests` changes, seat-pool and capacity checks for the booking's existing `travel_date` are re-run inside the slot lock; `total_price` is recomputed. Slot swap and `travel_date` swap are **not** supported on PATCH — cancel and rebook to change either.
 
-**Status transitions.** Only `confirmed → cancelled` (and no-ops) are accepted. **`cancelled → confirmed` is rejected with `422` on `status`** — re-confirming a cancelled row would need the full create-time invariant chain (schedule bookability, per-reservation-per-schedule uniqueness, seat pool, ferry capacity) to be re-run against the current world, and a customer asking to "undo" a cancellation should create a new booking instead. Client UX: on a cancelled row, hide/disable any "re-activate" affordance; surface a "book again" action that posts a fresh `POST /ferry-bookings`.
+**Status transitions.** Only `confirmed → cancelled` (and no-ops) are accepted. **`cancelled → confirmed` is rejected with `422` on `status`** — re-confirming a cancelled row would need the full create-time invariant chain (park-open, per-reservation-per-slot-per-date uniqueness, seat pool, ferry capacity) to be re-run against the current world, and a customer asking to "undo" a cancellation should create a new booking instead. Client UX: on a cancelled row, hide/disable any "re-activate" affordance; surface a "book again" action that posts a fresh `POST /ferry-bookings`.
 
 | From ↓ / To → | `confirmed` | `cancelled` |
 |---|---|---|
 | `confirmed` | no-op (200) | cancel (200, sets `cancelled_at`) |
 | `cancelled` | **422 on `status`** | no-op (200) |
 
-`DELETE` — soft cancel (staff-only): sets `status=cancelled`, `cancelled_at=now()`, returns `204`. Customer call → `403`.
+`DELETE` — soft cancel (staff-only): sets `status=cancelled`, `cancelled_at=now()`, returns `204`. Customer call → `403`. The partial unique excludes cancelled rows so the same `(reservation, slot, date)` can be rebooked after a cancel.
 
-**Cancellation cascade** — same known gap as the other booking modules: cancelling the underlying `RoomBooking` does not auto-cancel attached ferry bookings.
+**Cascade entry points.** Three upstream events can cancel a confirmed ferry booking automatically:
+1. **Slot archive** (`DELETE /ferry-schedules/{id}` with `on_conflict=cascade`) — soft-deletes the slot and cancels every confirmed booking on it across all dates. See §7.
+2. **Ferry archive** (`DELETE /ferries/{ferry}` with `on_conflict=cascade`) — soft-deletes ferry + slots + cancels all confirmed bookings.
+3. **Park-closed cascade** (`POST/PUT /theme-parks/{id}/hour-overrides` or opening-hour mutations with `on_conflict=cascade`) — cancels confirmed ferry bookings on dates the change closes. See §9.
+
+Eager-loads on the booking response use `withTrashed()` for `schedule`, `schedule.ferry`, `schedule.ferry.ferryType` so a cancelled booking still serializes the (potentially archived) chain it ran against.
+
+**Known gap.** Cancelling the underlying `RoomBooking` does not auto-cancel attached ferry bookings — same gap as the other booking modules.
 
 ---
 
@@ -1327,9 +1393,9 @@ POST   /api/theme-parks/{theme_park}/opening-hours            [park.create]
 PUT    /api/theme-parks/{theme_park}/opening-hours/{opening_hour}  [park.update]
 DELETE /api/theme-parks/{theme_park}/opening-hours/{opening_hour}  [park.delete]
 
-POST   /api/theme-parks/{theme_park}/hour-overrides           [park.create]
-PUT    /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.update]
-DELETE /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.delete]
+POST   /api/theme-parks/{theme_park}/hour-overrides           [park.create — body: on_conflict=reject|cascade; cascade also cancels confirmed ferry bookings on closed dates]
+PUT    /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.update — same cascade contract]
+DELETE /api/theme-parks/{theme_park}/hour-overrides/{hour_override}  [park.delete — query: on_conflict=reject|cascade; same cascade contract]
 
 POST   /api/theme-parks/{theme_park}/activities               [park.create]
 PUT    /api/theme-parks/{theme_park}/activities/{park_activity}  [park.update]
@@ -1343,15 +1409,15 @@ POST   /api/theme-parks/{theme_park}/activities/{park_activity}/schedules/{sched
 
 POST   /api/ferry-types                                       [ferry.create → ferry-manager or superadmin]
 PUT    /api/ferry-types/{ferry_type}                          [ferry.update → ferry-manager or superadmin]
-DELETE /api/ferry-types/{ferry_type}                          [superadmin]
+DELETE /api/ferry-types/{ferry_type}                          [superadmin — archive + cascade; body: on_conflict=reject|cascade]
 
 POST   /api/ferries                                           [ferry.create → ferry-manager or superadmin]
 PUT    /api/ferries/{ferry}                                   [ferry.update → ferry-manager or superadmin]
-DELETE /api/ferries/{ferry}                                   [superadmin]
+DELETE /api/ferries/{ferry}                                   [superadmin — archive + cascade; body: on_conflict=reject|cascade]
 
-POST   /api/ferry-schedules                                   [ferry.create → ferry-manager or superadmin]
-PUT    /api/ferry-schedules/{ferry_schedule}                  [ferry.update → ferry-manager or superadmin]
-DELETE /api/ferry-schedules/{ferry_schedule}                  [ferry.delete → superadmin]
+POST   /api/ferry-schedules                                   [ferry.create → slot CRUD: (ferry_id, departure_time, arrival_time, ports)]
+PUT    /api/ferry-schedules/{ferry_schedule}                  [ferry.update → slot CRUD]
+DELETE /api/ferry-schedules/{ferry_schedule}                  [ferry.delete → superadmin — archive + cascade; body: on_conflict=reject|cascade]
 
 GET    /api/reservations                                      [bookings.view — customer: own; hotel-manager: reservations in managed hotels; superadmin: all]
 GET    /api/reservations/{reservation}                        [bookings.view — same scope]
@@ -1382,7 +1448,7 @@ DELETE /api/park-activity-bookings/{park_activity_booking}    [bookings.cancel �
 
 GET    /api/ferry-bookings                                    [bookings.view — customer: own only; ferry-manager/superadmin: all]
 GET    /api/ferry-bookings/{ferry_booking}                    [bookings.view]
-POST   /api/ferry-bookings                                    [bookings.create — inclusive room-booking window]
-PUT    /api/ferry-bookings/{ferry_booking}                    [bookings.update — ferry-manager or superadmin]
+POST   /api/ferry-bookings                                    [bookings.create — body: (reservation_id, ferry_schedule_id, travel_date, guests); inclusive window; rejected on park-closed dates]
+PUT    /api/ferry-bookings/{ferry_booking}                    [bookings.update — ferry-manager or superadmin; status + guests only; reconfirm-from-cancelled blocked]
 DELETE /api/ferry-bookings/{ferry_booking}                    [bookings.cancel — ferry-manager or superadmin only]
 ```
