@@ -297,6 +297,45 @@ room_no      string max:255 required, unique within {hotel} (live rooms only)
 ```
 `PATCH`: same with `sometimes`; uniqueness ignores the current room id AND archived siblings.
 
+##### Hotel Availability (read-only)
+
+Two public endpoints, both backed by `RoomAvailability`. Pick by what the caller is rendering: aggregate for "is this window bookable", daily for calendar-style per-night greying.
+
+| Method | Path | Shape |
+|---|---|---|
+| GET | `/hotels/{hotel}/availability` | window-aggregate per room type, plus per-room `{room_id, room_no, free}` flags |
+| GET | `/hotels/{hotel}/availability/daily` | per-night `{date, free}` series per room type |
+
+Common query params: `?from=YYYY-MM-DD&to=YYYY-MM-DD`. Both default `from = today`, `to = from + 1 day`. Both validate `to > from` and reject ranges over 366 days with `422 errors.to`. Both run unauthenticated.
+
+**Overlap rule (shared with booking creation).** A confirmed `RoomBooking` overlaps `[from, to)` iff `check_in_date < to AND check_out_date > from` — exclusive checkout. The daily endpoint applies the same half-open semantic per night: a booking with `check_out_date = D` occupies nights up to `D − 1`; `D` itself is reported as free. So a date can be both "fully booked as a check-in candidate" and "selectable as a check-out boundary" — that is intentional.
+
+**Daily response example** (`?from=2026-05-01&to=2026-05-04`):
+```json
+{
+  "data": {
+    "hotel_id": 1,
+    "from": "2026-05-01",
+    "to":   "2026-05-04",
+    "room_types": [
+      {
+        "room_type_id": 7,
+        "name": "Standard",
+        "total": 3,
+        "days": [
+          {"date": "2026-05-01", "free": 3},
+          {"date": "2026-05-02", "free": 2},
+          {"date": "2026-05-03", "free": 2}
+        ]
+      }
+    ]
+  }
+}
+```
+`days` has `to − from` entries (one per night in the half-open window). `booked` is intentionally not returned — derive as `total − free` if needed. `rooms[]`, `capacity`, `price`, and per-window totals are intentionally omitted; the aggregate endpoint and the room-types endpoint already cover those.
+
+**Known fragmentation gap.** Per-night `free ≥ 1` across a multi-night range does **not** guarantee a single room is free for the whole range — it could be a different room each night. The daily endpoint inherits the same gap as the aggregate endpoint's `booked` count. The booking POST is the backstop and will reject the create with the standard availability `422`. UIs using `/availability/daily` to grey out fully-booked nights still significantly cut down on trial-and-error.
+
 ---
 
 #### 7. Ferry Types, Ferries & Ferry Schedules
@@ -822,7 +861,7 @@ notes       nullable, string
 
 A `Reservation` is the trip envelope that groups a user's bookings together: one or more `RoomBooking`s (§11) plus tickets from the four ticket modules (`ParkBooking`, `BeachBooking`, `ParkActivityBooking`, `FerryBooking` — §12–15). Reservations are **created implicitly** — there is no `POST /reservations`. They come into being as a side-effect of `POST /room-bookings` when the caller omits `reservation_id`; subsequent ticket bookings attach to the reservation by passing its id.
 
-A reservation has no dates, status, or totals of its own — those are derived from attached bookings. The one piece of business logic it exposes is the seat-pool helper that ticket modules call to size how many tickets the reservation can hold on a given date:
+A reservation has no dates of its own — those are derived from attached bookings. It exposes three derived signals on its index/show payload (`status`, `total_amount`, `bookings_summary`) plus the seat-pool helpers that ticket modules call to size how many tickets the reservation can hold on a given date:
 
 - **`Reservation::seatPoolOn($date)`** — sum of confirmed room-booking `guests` with **exclusive-checkout** window (`check_in_date <= $date < check_out_date`). Used by park, beach, and park-activity bookings. Checkout day is always rejected (pool = 0) because guests are leaving.
 - **`Reservation::ferrySeatPoolOn($date)`** — same, but **inclusive** on both ends (`check_in_date <= $date <= check_out_date`). Used only by ferry bookings (§15) because arrival-day and departure-day ferries are primary use cases.
@@ -836,21 +875,45 @@ Both helpers ignore `cancelled` room bookings, so a cancellation zeroes out the 
   "user_id": 17,
   "user":          { /* UserResource when eager-loaded */ },
   "room_bookings": [ /* RoomBookingResource[] when eager-loaded */ ],
+  "bookings_summary": { "rooms": 2, "park": 1, "beach": 0, "activity": 3, "ferry": 1 },
+  "total_amount":     "1240.00",
+  "status":           "active",
   "created_at": "...",
   "updated_at": "..."
 }
 ```
 
+**Derived fields (index + show only).** `bookings_summary`, `total_amount`, and `status` are populated via `withCount`/`withSum` aggregates on the controller and are **only present when the reservation is fetched from `/reservations` or `/reservations/{reservation}`**. When `ReservationResource` is embedded inside another payload (e.g. nested inside `RoomBookingResource` via the `reservation` relation), the three fields are **omitted entirely** rather than rendered with placeholder data — frontends should treat their absence as "this is an embedded reservation, fetch the dedicated endpoint for these signals."
+
+Derivation rules:
+
+- **`bookings_summary.{rooms|park|beach|activity|ferry}`** — count of `confirmed` bookings in each module. Cancelled rows are excluded; the row itself shows the cancelled status badge instead.
+- **`total_amount`** — string decimal (`bcadd`-summed across all five modules) of `total_price` for confirmed bookings only. Returns `"0.00"` (not `null`) when every booking is cancelled or the reservation has zero bookings, so the column always renders as `$0.00`.
+- **`status`** — derived from confirmed/cancelled counts across all five modules:
+  - `active` → ≥1 confirmed AND zero cancelled.
+  - `partial` → ≥1 confirmed AND ≥1 cancelled.
+  - `cancelled` → zero confirmed (covers both fully-cancelled and zero-booking reservations).
+
 Ticket bookings (park / beach / activity / ferry) are **not** embedded on the reservation payload; fetch them from their respective index endpoints with `?reservation_id=…`.
 
 | Method | Path | Auth | Permission | Policy |
 |---|---|---|---|---|
-| GET | `/reservations` | bearer | `bookings.view` | customer: own only; hotel-manager: reservations whose room-bookings touch a managed hotel; superadmin: all |
+| GET | `/reservations` | bearer | `bookings.view` | customer: own only; hotel-manager: reservations whose room-bookings touch a managed hotel; superadmin: all. **TBD:** park-manager / beach-manager / ferry-manager scoping is undefined pending the corresponding user-management modules — those roles currently fall through to the "own only" branch (effectively customer-side scope). |
 | GET | `/reservations/{reservation}` | bearer | `bookings.view` | same scope as index (hotel-manager access is via `managedHotels` ↔ `roomBookings.hotel_id`) |
 
 No `POST / PATCH / DELETE` — reservations are not directly mutable. Attach new rooms via `POST /room-bookings`; manage status on the underlying booking rows.
 
-Index: paginated (10/page, `created_at DESC`). Eager-loads `user`, `roomBookings.hotel`, `roomBookings.roomType`, `roomBookings.room`.
+Index: paginated (10/page, `created_at DESC`). Eager-loads `user`, `roomBookings.hotel`, `roomBookings.roomType`, `roomBookings.room`, plus the per-module count/sum aggregates that drive the derived fields above.
+
+**Index filters** (all optional, AND-combined with each other and with pagination):
+
+| Param | Type | Semantics |
+|---|---|---|
+| `status` | `active \| partial \| cancelled` | Same definition as the derived `status` field. Implemented as `whereHas`/`whereDoesntHave` checks against confirmed/cancelled rows on each of the five booking relations. |
+| `hotel_id` | int | Reservations whose `room_bookings` (any status) touch this hotel. Useful for superadmin and multi-hotel managers; combine with `?status=active` to narrow to currently-active stays. Validated against `exists:hotels,id` (`422 errors.hotel_id` on miss). |
+| `customer` | string (≤255) | Substring match against `user.name` OR `user.email`, **case-insensitive** (portable `LOWER(...) LIKE LOWER(?)` so the same query runs on Postgres prod and SQLite tests). |
+
+No max-result cap — admins paginate. Pagination stays at 10/page; other defaults unchanged.
 
 ---
 
@@ -1332,6 +1395,7 @@ GET    /api/hotels/{hotel}/room-types/{room_type}
 GET    /api/hotels/{hotel}/rooms
 GET    /api/hotels/{hotel}/rooms/{room}
 GET    /api/hotels/{hotel}/availability                       [?from=&to= ; max 366-day range]
+GET    /api/hotels/{hotel}/availability/daily                 [?from=&to= ; max 366-day range]
 GET    /api/beach-activities
 GET    /api/beach-activities/{beach_activity}
 GET    /api/beach-activities/{beach_activity}/schedules
@@ -1427,8 +1491,8 @@ POST   /api/ferry-schedules                                   [ferry.create → 
 PUT    /api/ferry-schedules/{ferry_schedule}                  [ferry.update → slot CRUD]
 DELETE /api/ferry-schedules/{ferry_schedule}                  [ferry.delete → superadmin — archive + cascade; body: on_conflict=reject|cascade]
 
-GET    /api/reservations                                      [bookings.view — customer: own; hotel-manager: reservations in managed hotels; superadmin: all]
-GET    /api/reservations/{reservation}                        [bookings.view — same scope]
+GET    /api/reservations                                      [bookings.view — customer: own; hotel-manager: reservations in managed hotels; superadmin: all. Filters: ?status=active|partial|cancelled ?hotel_id ?customer (substring on user.name/email, case-insensitive). Resource includes derived bookings_summary / total_amount / status]
+GET    /api/reservations/{reservation}                        [bookings.view — same scope; same derived fields]
 
 GET    /api/room-bookings                                     [bookings.view — customer: own; hotel-manager: managed hotels; superadmin: all. Filters: ?status ?hotel_id ?room_type_id ?reservation_id ?check_in_from ?check_in_to]
 GET    /api/room-bookings/{room_booking}                      [bookings.view]
