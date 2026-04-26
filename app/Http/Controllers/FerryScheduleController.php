@@ -127,6 +127,11 @@ class FerryScheduleController extends Controller
         }
 
         $cascade = DB::transaction(function () use ($ferrySchedule) {
+            // Lock the schedule row first so a concurrent FerryBookingController::store
+            // (which lockForUpdates the same row) can't insert a confirmed booking
+            // between our cancel and delete steps and survive on an archived slot.
+            FerrySchedule::query()->whereKey($ferrySchedule->id)->lockForUpdate()->firstOrFail();
+
             $bookingsCancelled = $ferrySchedule->bookings()
                 ->where('status', 'confirmed')
                 ->update(['status' => 'cancelled', 'cancelled_at' => now()]);

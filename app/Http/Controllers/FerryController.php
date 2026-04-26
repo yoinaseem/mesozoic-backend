@@ -100,7 +100,14 @@ class FerryController extends Controller
         }
 
         $cascade = DB::transaction(function () use ($ferry) {
-            $slotIds = $ferry->schedules()->pluck('id');
+            // Lock all affected slot rows first so a concurrent
+            // FerryBookingController::store (which lockForUpdates an individual
+            // slot row) can't insert a confirmed booking between our cancel and
+            // delete steps and survive on an archived slot/ferry.
+            $slotIds = FerrySchedule::query()
+                ->where('ferry_id', $ferry->id)
+                ->lockForUpdate()
+                ->pluck('id');
 
             $bookingsCancelled = FerryBooking::query()
                 ->whereIn('ferry_schedule_id', $slotIds)
