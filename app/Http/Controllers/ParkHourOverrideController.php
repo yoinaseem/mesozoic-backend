@@ -65,10 +65,15 @@ class ParkHourOverrideController extends Controller
                     CarbonImmutable::parse($data['date']),
                     CarbonImmutable::parse($data['date']),
                 );
+                $ferryConflicts = $reconciler->findFerryBookingConflicts(
+                    CarbonImmutable::parse($data['date']),
+                    CarbonImmutable::parse($data['date']),
+                );
 
                 $cascade = $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "override applied for {$data['date']}",
                 );
@@ -136,9 +141,14 @@ class ParkHourOverrideController extends Controller
                 $newDate = $hourOverride->fresh()->date->toDateString();
 
                 $conflicts = collect();
+                $ferryConflicts = collect();
                 foreach (collect([$oldDate, $newDate])->unique()->values() as $d) {
                     $conflicts = $conflicts->concat($reconciler->findScheduleConflicts(
                         $themePark,
+                        CarbonImmutable::parse($d),
+                        CarbonImmutable::parse($d),
+                    ));
+                    $ferryConflicts = $ferryConflicts->concat($reconciler->findFerryBookingConflicts(
                         CarbonImmutable::parse($d),
                         CarbonImmutable::parse($d),
                     ));
@@ -147,6 +157,7 @@ class ParkHourOverrideController extends Controller
                 $cascade = $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "override updated ({$oldDate} → {$newDate})",
                 );
@@ -190,10 +201,15 @@ class ParkHourOverrideController extends Controller
                     CarbonImmutable::parse($date),
                     CarbonImmutable::parse($date),
                 );
+                $ferryConflicts = $reconciler->findFerryBookingConflicts(
+                    CarbonImmutable::parse($date),
+                    CarbonImmutable::parse($date),
+                );
 
                 return $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "override removed for {$date}",
                 );
@@ -202,7 +218,9 @@ class ParkHourOverrideController extends Controller
             return response()->json($e->payload(), 409);
         }
 
-        if ($cascadeResult['schedules_cancelled'] === 0 && $cascadeResult['bookings_cancelled'] === 0) {
+        if ($cascadeResult['schedules_cancelled'] === 0
+            && $cascadeResult['bookings_cancelled'] === 0
+            && $cascadeResult['ferry_bookings_cancelled'] === 0) {
             return response()->json(null, 204);
         }
 
@@ -216,17 +234,25 @@ class ParkHourOverrideController extends Controller
     private function applyOrThrow(
         ParkScheduleReconciler $reconciler,
         Collection $conflicts,
+        Collection $ferryConflicts,
         string $onConflict,
         string $reason,
     ): array {
-        if ($conflicts->isEmpty()) {
-            return ['schedules_cancelled' => 0, 'bookings_cancelled' => 0];
+        if ($conflicts->isEmpty() && $ferryConflicts->isEmpty()) {
+            return [
+                'schedules_cancelled' => 0,
+                'bookings_cancelled' => 0,
+                'ferry_bookings_cancelled' => 0,
+            ];
         }
 
         if ($onConflict !== 'cascade') {
-            throw new HoursCascadeConflictException($conflicts);
+            throw new HoursCascadeConflictException($conflicts, $ferryConflicts);
         }
 
-        return $reconciler->cascadeCancel($conflicts, $reason);
+        $result = $reconciler->cascadeCancel($conflicts, $reason);
+        $result['ferry_bookings_cancelled'] = $reconciler->cancelFerryBookings($ferryConflicts);
+
+        return $result;
     }
 }

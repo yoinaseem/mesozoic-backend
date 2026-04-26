@@ -16,9 +16,12 @@ use Illuminate\Support\Collection;
  */
 class HoursCascadeConflictException extends Exception
 {
-    public function __construct(public Collection $conflicts)
+    public Collection $ferryBookingConflicts;
+
+    public function __construct(public Collection $conflicts, ?Collection $ferryBookingConflicts = null)
     {
-        parent::__construct('Hours change conflicts with existing schedules.');
+        $this->ferryBookingConflicts = $ferryBookingConflicts ?? collect();
+        parent::__construct('Hours change conflicts with existing schedules or ferry bookings.');
     }
 
     /**
@@ -36,9 +39,17 @@ class HoursCascadeConflictException extends Exception
                 'end_time' => $c['schedule']->end_time,
                 'confirmed_bookings' => $c['confirmed_bookings'],
             ])->values()->all(),
+            'ferry_bookings' => $this->ferryBookingConflicts->map(fn ($b) => [
+                'id' => $b->id,
+                'reservation_id' => $b->reservation_id,
+                'ferry_schedule_id' => $b->ferry_schedule_id,
+                'travel_date' => $b->travel_date->toDateString(),
+                'guests' => $b->guests,
+            ])->values()->all(),
             'counts' => [
                 'schedules' => $this->conflicts->count(),
                 'bookings' => (int) $this->conflicts->sum('confirmed_bookings'),
+                'ferry_bookings' => $this->ferryBookingConflicts->count(),
             ],
         ];
     }

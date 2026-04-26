@@ -63,9 +63,11 @@ class ParkOpeningHourController extends Controller
             [$openingHour, $cascadeResult] = DB::transaction(function () use ($themePark, $data, $reconciler, $onConflict) {
                 $openingHour = $themePark->openingHours()->create($data);
                 $conflicts = $this->findRangeConflicts($reconciler, $themePark);
+                $ferryConflicts = $this->findRangeFerryConflicts($reconciler);
                 $cascade = $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "baseline added for {$data['day']}",
                 );
@@ -114,9 +116,11 @@ class ParkOpeningHourController extends Controller
             [$openingHour, $cascadeResult] = DB::transaction(function () use ($themePark, $openingHour, $data, $reconciler, $onConflict) {
                 $openingHour->update($data);
                 $conflicts = $this->findRangeConflicts($reconciler, $themePark);
+                $ferryConflicts = $this->findRangeFerryConflicts($reconciler);
                 $cascade = $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "baseline updated for {$openingHour->day}",
                 );
@@ -148,10 +152,12 @@ class ParkOpeningHourController extends Controller
                 $day = $openingHour->day;
                 $openingHour->delete();
                 $conflicts = $this->findRangeConflicts($reconciler, $themePark);
+                $ferryConflicts = $this->findRangeFerryConflicts($reconciler);
 
                 return $this->applyOrThrow(
                     $reconciler,
                     $conflicts,
+                    $ferryConflicts,
                     $onConflict,
                     "baseline removed for {$day}",
                 );
@@ -160,7 +166,9 @@ class ParkOpeningHourController extends Controller
             return response()->json($e->payload(), 409);
         }
 
-        if ($cascadeResult['schedules_cancelled'] === 0 && $cascadeResult['bookings_cancelled'] === 0) {
+        if ($cascadeResult['schedules_cancelled'] === 0
+            && $cascadeResult['bookings_cancelled'] === 0
+            && $cascadeResult['ferry_bookings_cancelled'] === 0) {
             return response()->json(null, 204);
         }
 
@@ -176,20 +184,36 @@ class ParkOpeningHourController extends Controller
         );
     }
 
+    private function findRangeFerryConflicts(ParkScheduleReconciler $reconciler): Collection
+    {
+        return $reconciler->findFerryBookingConflicts(
+            CarbonImmutable::parse(today()->toDateString()),
+            CarbonImmutable::parse(today()->addDays(self::CASCADE_RANGE_DAYS)->toDateString()),
+        );
+    }
+
     private function applyOrThrow(
         ParkScheduleReconciler $reconciler,
         Collection $conflicts,
+        Collection $ferryConflicts,
         string $onConflict,
         string $reason,
     ): array {
-        if ($conflicts->isEmpty()) {
-            return ['schedules_cancelled' => 0, 'bookings_cancelled' => 0];
+        if ($conflicts->isEmpty() && $ferryConflicts->isEmpty()) {
+            return [
+                'schedules_cancelled' => 0,
+                'bookings_cancelled' => 0,
+                'ferry_bookings_cancelled' => 0,
+            ];
         }
 
         if ($onConflict !== 'cascade') {
-            throw new HoursCascadeConflictException($conflicts);
+            throw new HoursCascadeConflictException($conflicts, $ferryConflicts);
         }
 
-        return $reconciler->cascadeCancel($conflicts, $reason);
+        $result = $reconciler->cascadeCancel($conflicts, $reason);
+        $result['ferry_bookings_cancelled'] = $reconciler->cancelFerryBookings($ferryConflicts);
+
+        return $result;
     }
 }

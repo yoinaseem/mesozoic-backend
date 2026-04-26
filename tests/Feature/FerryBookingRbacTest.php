@@ -851,6 +851,101 @@ test('archiving a slot frees its (ferry, departure_time) — operator can recrea
         ->assertCreated();
 });
 
+test('creating a closed-day override on a date with confirmed ferry bookings returns 409', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $park = fbSeedAlwaysOpenPark();
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated();
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->postJson("/api/theme-parks/{$park->id}/hour-overrides", [
+            'date' => $checkIn,
+            'open_time' => null,
+            'close_time' => null,
+            'note' => 'Public holiday',
+        ])
+        ->assertStatus(409)
+        ->assertJsonPath('counts.ferry_bookings', 1)
+        ->assertJsonPath('ferry_bookings.0.travel_date', $checkIn);
+
+    // Override was rolled back; ferry booking still confirmed.
+    expect(\App\Models\ParkHourOverride::query()->where('park_id', $park->id)->count())->toBe(0);
+    expect(FerryBooking::query()->where('status', 'confirmed')->count())->toBe(1);
+});
+
+test('creating a closed-day override with on_conflict=cascade cancels the ferry booking', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $park = fbSeedAlwaysOpenPark();
+    $slot = fbSlot(fbFerry());
+
+    $bookingId = $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated()->json('data.id');
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    $this->actingAs($admin)
+        ->postJson("/api/theme-parks/{$park->id}/hour-overrides", [
+            'date' => $checkIn,
+            'open_time' => null,
+            'close_time' => null,
+            'note' => 'Public holiday',
+            'on_conflict' => 'cascade',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('cascade.ferry_bookings_cancelled', 1);
+
+    $booking = FerryBooking::find($bookingId);
+    expect($booking->status)->toBe('cancelled');
+    expect($booking->cancelled_at)->not->toBeNull();
+});
+
+test('cascade also cancels ferry bookings on a date narrowed but still open (no — it should only cascade closed dates)', function () {
+    // Sanity check that "narrowing the open window" doesn't drag ferry bookings
+    // along — ferries care about open vs closed, not about specific hours.
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $park = fbSeedAlwaysOpenPark();
+    $slot = fbSlot(fbFerry());
+
+    $bookingId = $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated()->json('data.id');
+
+    $admin = User::factory()->create();
+    $admin->assignRole('superadmin');
+
+    // Narrow hours (not closed) — park stays open, ferry stays confirmed.
+    $this->actingAs($admin)
+        ->postJson("/api/theme-parks/{$park->id}/hour-overrides", [
+            'date' => $checkIn,
+            'open_time' => '12:00:00',
+            'close_time' => '14:00:00',
+        ])
+        ->assertCreated()
+        ->assertJsonPath('cascade.ferry_bookings_cancelled', 0);
+
+    expect(FerryBooking::find($bookingId)->status)->toBe('confirmed');
+});
+
 test('customer index only returns their own ferry bookings', function () {
     $me = fbCustomer();
     $other = fbCustomer();

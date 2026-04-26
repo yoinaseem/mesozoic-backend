@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\FerryBooking;
 use App\Models\ParkActivity;
 use App\Models\ParkActivityBooking;
 use App\Models\ParkActivitySchedule;
@@ -132,6 +133,7 @@ class ParkScheduleReconciler
                     $schedule->start_time,
                     $schedule->end_time,
                 );
+
                 continue;
             } catch (ValidationException $e) {
                 $confirmedBookings = ParkActivityBooking::query()
@@ -194,6 +196,7 @@ class ParkScheduleReconciler
                             'open' => $hours['open_time'],
                             'close' => $hours['close_time'],
                         ]);
+
                         continue;
                     }
                 }
@@ -248,6 +251,87 @@ class ParkScheduleReconciler
                 'schedules_resynced' => $schedulesResynced,
             ];
         });
+    }
+
+    /**
+     * Confirmed ferry bookings whose travel_date falls in the given range AND
+     * whose travel_date is now park-closed (the same rule
+     * FerryBookingController::assertParksOpenOn enforces at create time).
+     * Past dates are skipped — we never rewrite history. Empty when no parks
+     * exist (the rule has no targets).
+     *
+     * @return Collection<int, FerryBooking>
+     */
+    public function findFerryBookingConflicts(CarbonImmutable $from, CarbonImmutable $to): Collection
+    {
+        $today = today()->toDateString();
+        $rangeStart = $from->toDateString();
+        $rangeEnd = $to->toDateString();
+
+        $effectiveStart = $rangeStart < $today ? $today : $rangeStart;
+        if ($effectiveStart > $rangeEnd) {
+            return collect();
+        }
+
+        $parks = ThemePark::all();
+        if ($parks->isEmpty()) {
+            return collect();
+        }
+
+        $bookings = FerryBooking::query()
+            ->where('status', 'confirmed')
+            ->whereDate('travel_date', '>=', $effectiveStart)
+            ->whereDate('travel_date', '<=', $rangeEnd)
+            ->get();
+
+        if ($bookings->isEmpty()) {
+            return collect();
+        }
+
+        // Cache the closed/open verdict per date so we don't call isOpenOn
+        // once per booking when many bookings share a travel_date.
+        $closedByDate = [];
+
+        return $bookings->filter(function (FerryBooking $booking) use ($parks, &$closedByDate) {
+            $date = $booking->travel_date->toDateString();
+            if (! array_key_exists($date, $closedByDate)) {
+                $closed = false;
+                foreach ($parks as $park) {
+                    if (! $park->isOpenOn($date)) {
+                        $closed = true;
+                        break;
+                    }
+                }
+                $closedByDate[$date] = $closed;
+            }
+
+            return $closedByDate[$date];
+        })->values();
+    }
+
+    /**
+     * Cancel a collection of confirmed ferry bookings as part of a hours-
+     * change cascade. Returns the number of rows actually flipped. Ferry
+     * bookings have no notes field, so the cascade reason isn't audited
+     * on the row — operator audit lives in the override/baseline change
+     * itself.
+     */
+    public function cancelFerryBookings(Collection $bookings): int
+    {
+        if ($bookings->isEmpty()) {
+            return 0;
+        }
+
+        $ids = $bookings->pluck('id')->all();
+
+        return FerryBooking::query()
+            ->whereIn('id', $ids)
+            ->where('status', 'confirmed')
+            ->update([
+                'status' => 'cancelled',
+                'cancelled_at' => now(),
+                'updated_at' => now(),
+            ]);
     }
 
     /**
