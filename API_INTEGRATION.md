@@ -359,6 +359,8 @@ With confirmed bookings on any vessel of this type:
 
 Empty cascade → `204`.
 
+The cascade runs inside a `DB::transaction` and `lockForUpdate`s every affected slot row before bulk-cancelling bookings and soft-deleting. This serialises against `FerryBookingController::store` (which `lockForUpdate`s the slot row in its own critical section), so a concurrent booking can't slip in between cancel and delete and survive as `confirmed` on an archived slot.
+
 ##### Ferries (vessels)
 
 `FerryResource`:
@@ -401,6 +403,8 @@ With confirmed bookings on any of this ferry's slots:
 - `on_conflict=cascade` → `200 {cascade: {slots_archived, bookings_cancelled}}` after archiving the ferry + all its slots and cancelling those bookings.
 
 Empty cascade → `204`.
+
+The cascade runs inside a `DB::transaction` and `lockForUpdate`s every affected slot row before bulk-cancelling bookings and soft-deleting, serialising against concurrent `POST /ferry-bookings` on those slots.
 
 ##### Ferry Schedules (slots — DESD-100)
 
@@ -452,6 +456,8 @@ With confirmed bookings on this slot:
 - `on_conflict=cascade` → `200 {cascade: {bookings_cancelled}}` after cancelling those bookings + soft-deleting the slot.
 
 Empty cascade → `204`. Soft-deleted slots are hidden from index/show but stay readable through booking eager-loads (`schedule` uses `withTrashed()` so cancelled-booking history keeps serializing the slot it ran against).
+
+The cascade runs inside a `DB::transaction` and `lockForUpdate`s the slot row before cancelling bookings and soft-deleting, serialising against `FerryBookingController::store` so a concurrent booking can't commit as `confirmed` against a slot that's about to be archived.
 
 ---
 
@@ -1258,6 +1264,8 @@ If `guests` changes, seat-pool and capacity checks for the booking's existing `t
 1. **Slot archive** (`DELETE /ferry-schedules/{id}` with `on_conflict=cascade`) — soft-deletes the slot and cancels every confirmed booking on it across all dates. See §7.
 2. **Ferry archive** (`DELETE /ferries/{ferry}` with `on_conflict=cascade`) — soft-deletes ferry + slots + cancels all confirmed bookings.
 3. **Park-closed cascade** (`POST/PUT /theme-parks/{id}/hour-overrides` or opening-hour mutations with `on_conflict=cascade`) — cancels confirmed ferry bookings on dates the change closes. See §9.
+
+Slot/ferry/type cascades all `lockForUpdate` the affected slot rows inside their transaction before cancelling bookings, so they serialise against `POST /ferry-bookings` (which locks the slot row in its own critical section). A concurrent booking can't commit as `confirmed` on a slot that the cascade is about to archive.
 
 Eager-loads on the booking response use `withTrashed()` for `schedule`, `schedule.ferry`, `schedule.ferry.ferryType` so a cancelled booking still serializes the (potentially archived) chain it ran against.
 
