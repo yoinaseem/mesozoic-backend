@@ -23,6 +23,15 @@ pest()->extend(Tests\TestCase::class)
         // leak into the next one. Flush before seeding each test.
         app(PermissionRegistrar::class)->forgetCachedPermissions();
 
+        // The previous test may have hit a route protected by `auth:sanctum`,
+        // and Laravel's Authenticate middleware calls AuthManager::shouldUse,
+        // which writes `auth.defaults.guard` back to 'sanctum' in the shared
+        // config repository. Spatie's Role/Permission lookups fall back to
+        // that config when no guard is passed, so a stale 'sanctum' breaks
+        // any subsequent Role::findByName() call (sanctum has no provider).
+        // Reset it to 'web' before each test.
+        config()->set('auth.defaults.guard', 'web');
+
         $this->seed(RolesAndPermissionsSeeder::class);
     })
     ->in('Feature');

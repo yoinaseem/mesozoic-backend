@@ -17,11 +17,14 @@ use App\Http\Controllers\ParkBookingController;
 use App\Http\Controllers\ParkEffectiveHoursController;
 use App\Http\Controllers\ParkHourOverrideController;
 use App\Http\Controllers\ParkOpeningHourController;
+use App\Http\Controllers\PermissionController;
 use App\Http\Controllers\ReservationController;
+use App\Http\Controllers\RoleController;
 use App\Http\Controllers\RoomBookingController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
 use App\Http\Controllers\ThemeParkController;
+use App\Http\Controllers\UserAccessController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -68,6 +71,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::apiResource('users', UserController::class);
     Route::post('users/{user}/restore', [UserController::class, 'restore'])
         ->withTrashed();
+
+    // RBAC management — list catalogue, CRUD on roles, sync user roles +
+    // hotel-manager pivot, sync direct user permissions. All gated by
+    // `roles.manage` at the middleware layer; RolePolicy / UserPolicy
+    // re-check inside the controllers.
+    Route::get('/permissions', [PermissionController::class, 'index'])
+        ->middleware('permission:roles.manage');
+    Route::apiResource('roles', RoleController::class)
+        ->middleware('permission:roles.manage');
+    Route::put('users/{user}/roles', [UserAccessController::class, 'roles'])
+        ->middleware('permission:roles.manage');
+    Route::put('users/{user}/permissions', [UserAccessController::class, 'permissions'])
+        ->middleware('permission:roles.manage');
 
     // Hotel mutations — each verb gets its specific permission on the route,
     // then HotelPolicy re-checks on a per-hotel basis for update (scope).

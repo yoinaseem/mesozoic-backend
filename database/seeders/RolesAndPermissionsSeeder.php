@@ -28,6 +28,7 @@ class RolesAndPermissionsSeeder extends Seeder
             'room-types.view', 'room-types.create', 'room-types.update', 'room-types.delete',
             'rooms.view', 'rooms.create', 'rooms.update', 'rooms.delete',
             'users.view', 'users.create', 'users.update', 'users.delete',
+            'roles.manage',
 
             // Forward-compatible (wiring lands with each module)
             'ferry.view', 'ferry.create', 'ferry.update', 'ferry.delete',

@@ -55,4 +55,23 @@ class UserPolicy
     {
         return false;
     }
+
+    /**
+     * Sync a user's roles + managed-hotel pivot. Gated by `roles.manage`;
+     * superadmin bypass via before(). Self-lockout and last-superadmin
+     * invariants are enforced inside the controller (need transaction scope).
+     */
+    public function assignRoles(User $user, User $model): bool
+    {
+        return $user->hasPermissionTo('roles.manage');
+    }
+
+    /**
+     * Sync a user's direct (non-role-derived) permission grants. Same gate
+     * as assignRoles.
+     */
+    public function assignPermissions(User $user, User $model): bool
+    {
+        return $user->hasPermissionTo('roles.manage');
+    }
 }
