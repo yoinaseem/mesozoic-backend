@@ -17,6 +17,7 @@ class FerryBooking extends Model
     protected $fillable = [
         'reservation_id',
         'ferry_schedule_id',
+        'travel_date',
         'guests',
         'status',
         'price_per_guest',
@@ -25,6 +26,7 @@ class FerryBooking extends Model
     ];
 
     protected $casts = [
+        'travel_date' => 'date',
         'cancelled_at' => 'datetime',
         'guests' => 'integer',
         'price_per_guest' => 'decimal:2',

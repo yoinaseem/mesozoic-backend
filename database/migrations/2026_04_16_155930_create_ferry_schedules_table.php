@@ -11,18 +11,13 @@ return new class extends Migration
         Schema::create('ferry_schedules', function (Blueprint $table) {
             $table->id();
             $table->foreignId('ferry_id')->constrained()->cascadeOnDelete();
-            $table->date('travel_date');
             $table->time('departure_time');
-            $table->date('arrival_date');
             $table->time('arrival_time');
             $table->string('departure_port');
             $table->string('arrival_port');
-            $table->enum('status', ['scheduled', 'completed', 'cancelled'])->default('scheduled');
             $table->timestamps();
 
-            $table->index('travel_date');
-            $table->index('status');
-            $table->unique(['ferry_id', 'travel_date', 'departure_time'], 'ferry_schedule_unique_departure');
+            $table->unique(['ferry_id', 'departure_time'], 'ferry_schedule_unique_slot');
         });
     }
 

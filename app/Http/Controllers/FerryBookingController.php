@@ -47,7 +47,7 @@ class FerryBookingController extends Controller
             $query->whereHas('schedule', fn ($q) => $q->where('ferry_id', $ferryId));
         }
         if ($date = $request->query('travel_date')) {
-            $query->whereHas('schedule', fn ($q) => $q->whereDate('travel_date', $date));
+            $query->whereDate('travel_date', $date);
         }
 
         return FerryBookingResource::collection(
@@ -75,6 +75,7 @@ class FerryBookingController extends Controller
         $data = $request->validate([
             'reservation_id' => ['required', Rule::exists('reservations', 'id')],
             'ferry_schedule_id' => ['required', Rule::exists('ferry_schedules', 'id')],
+            'travel_date' => ['required', 'date', 'after_or_equal:today'],
             'guests' => ['required', 'integer', 'min:1'],
         ]);
 
@@ -83,13 +84,12 @@ class FerryBookingController extends Controller
 
         /** @var FerryType $type */
         $type = $schedule->ferry->ferryType;
-        $travelDate = $schedule->travel_date->toDateString();
+        $travelDate = $data['travel_date'];
 
         $this->assertReservationOwnedByCaller($user, $reservation);
-        $this->assertScheduleBookable($schedule);
         $this->assertReservationCoversTravelDate($reservation, $travelDate, $data['guests']);
-        $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id);
-        $this->assertFerryCapacityAvailable($type, $schedule, $data['guests']);
+        $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id, $travelDate);
+        $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests']);
 
         $pricePerGuest = $type->price;
         $totalPrice = bcmul((string) $pricePerGuest, (string) $data['guests'], 2);
@@ -97,6 +97,7 @@ class FerryBookingController extends Controller
         $booking = FerryBooking::create([
             'reservation_id' => $reservation->id,
             'ferry_schedule_id' => $schedule->id,
+            'travel_date' => $travelDate,
             'guests' => $data['guests'],
             'status' => 'confirmed',
             'price_per_guest' => $pricePerGuest,
@@ -105,9 +106,9 @@ class FerryBookingController extends Controller
 
         return (new FerryBookingResource(
             $booking->load([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.ferry.ferryType',
-        ])
+                'reservation.user' => fn ($q) => $q->withTrashed(),
+                'schedule.ferry.ferryType',
+            ])
         ))->response()->setStatusCode(201);
     }
 
@@ -131,10 +132,10 @@ class FerryBookingController extends Controller
         if (array_key_exists('guests', $data)) {
             $schedule = $ferryBooking->schedule()->with('ferry.ferryType')->firstOrFail();
             $type = $schedule->ferry->ferryType;
-            $travelDate = $schedule->travel_date->toDateString();
+            $travelDate = $ferryBooking->travel_date->toDateString();
 
             $this->assertReservationCoversTravelDate($ferryBooking->reservation, $travelDate, $data['guests']);
-            $this->assertFerryCapacityAvailable($type, $schedule, $data['guests'], $ferryBooking->id);
+            $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests'], $ferryBooking->id);
 
             $data['total_price'] = bcmul(
                 (string) $ferryBooking->price_per_guest,
@@ -151,9 +152,9 @@ class FerryBookingController extends Controller
 
         return new FerryBookingResource(
             $ferryBooking->load([
-            'reservation.user' => fn ($q) => $q->withTrashed(),
-            'schedule.ferry.ferryType',
-        ])
+                'reservation.user' => fn ($q) => $q->withTrashed(),
+                'schedule.ferry.ferryType',
+            ])
         );
     }
 
@@ -183,25 +184,6 @@ class FerryBookingController extends Controller
     }
 
     /**
-     * Only 'scheduled' departures are bookable; 'cancelled' and 'completed'
-     * rows are rejected, as are past-dated trips.
-     */
-    private function assertScheduleBookable(FerrySchedule $schedule): void
-    {
-        if ($schedule->status !== 'scheduled') {
-            throw ValidationException::withMessages([
-                'ferry_schedule_id' => ['This ferry schedule is not bookable.'],
-            ]);
-        }
-
-        if ($schedule->travel_date->toDateString() < now()->toDateString()) {
-            throw ValidationException::withMessages([
-                'ferry_schedule_id' => ['This ferry schedule is in the past.'],
-            ]);
-        }
-    }
-
-    /**
      * Ferries use the *inclusive* seat-pool window (check_in_date <=
      * travel_date <= check_out_date) so arrival-day and departure-day
      * ferries are both bookable — see Reservation::ferrySeatPoolOn.
@@ -212,7 +194,7 @@ class FerryBookingController extends Controller
 
         if ($pool === 0) {
             throw ValidationException::withMessages([
-                'ferry_schedule_id' => ['The reservation has no confirmed room covering this travel date.'],
+                'travel_date' => ['The reservation has no confirmed room covering this travel date.'],
             ]);
         }
 
@@ -224,39 +206,41 @@ class FerryBookingController extends Controller
     }
 
     /**
-     * One booking per (reservation, schedule) among confirmed rows. Same
-     * ferry on the same travel date but a different departure_time is a
-     * different schedule row, so a round-trip same-day itinerary is allowed.
+     * One booking per (reservation, schedule, travel_date) among confirmed
+     * rows. Same slot on a different date is fine; same date on a different
+     * slot (e.g. a same-day round trip) is fine.
      */
-    private function assertNoDuplicatePerSchedule(int $reservationId, int $scheduleId): void
+    private function assertNoDuplicatePerSchedule(int $reservationId, int $scheduleId, string $travelDate): void
     {
         $exists = FerryBooking::query()
             ->where('reservation_id', $reservationId)
             ->where('ferry_schedule_id', $scheduleId)
+            ->whereDate('travel_date', $travelDate)
             ->where('status', 'confirmed')
             ->exists();
 
         if ($exists) {
             throw ValidationException::withMessages([
-                'ferry_schedule_id' => ['This reservation already has a booking on this ferry departure.'],
+                'ferry_schedule_id' => ['This reservation already has a booking on this ferry departure for the selected date.'],
             ]);
         }
     }
 
     /**
-     * Count-then-insert capacity check against ferryType.capacity. Capacity
-     * lives on the type after the Hotel/RoomType-style restructure: a vessel
-     * inherits its seat count from its type. Mirrors the pattern used across
-     * the other booking modules.
+     * Count-then-insert capacity check against ferryType.capacity per
+     * (slot, travel_date). Capacity lives on the type — vessels inherit
+     * their seat count from their type.
      */
     private function assertFerryCapacityAvailable(
         FerryType $type,
         FerrySchedule $schedule,
+        string $travelDate,
         int $incomingGuests,
         ?int $ignoreBookingId = null,
     ): void {
         $confirmedGuests = (int) FerryBooking::query()
             ->where('ferry_schedule_id', $schedule->id)
+            ->whereDate('travel_date', $travelDate)
             ->where('status', 'confirmed')
             ->when($ignoreBookingId, fn ($q) => $q->where('id', '!=', $ignoreBookingId))
             ->sum('guests');

@@ -66,11 +66,6 @@ function fbConfirmedRoomBooking(
 
 function fbFerry(int $capacity = 50, float $price = 40.0): Ferry
 {
-    /**
-     * After the FerryType restructure, capacity + price live on the type.
-     * A ferry is a vessel under a type that inherits both. Each call here
-     * spins up a fresh type so per-test capacity/price tweaks stay isolated.
-     */
     $type = FerryType::create([
         'name' => 'Type '.fake()->unique()->word(),
         'description' => 'Mainland → island shuttle',
@@ -85,29 +80,31 @@ function fbFerry(int $capacity = 50, float $price = 40.0): Ferry
     ]);
 }
 
-function fbSchedule(
+/**
+ * Slot is a fixed catalogue row — no travel_date. Customers pick a
+ * (slot, date) pair at booking time.
+ */
+function fbSlot(
     Ferry $ferry,
-    string $travelDate,
     string $departureTime = '09:00:00',
+    string $arrivalTime = '11:00:00',
     string $departurePort = 'Mainland',
     string $arrivalPort = 'Isla Nublar',
-    string $status = 'scheduled',
 ): FerrySchedule {
-    return $ferry->schedules()->create([
-        'travel_date' => $travelDate,
-        'departure_time' => $departureTime,
-        'arrival_date' => $travelDate,
-        'arrival_time' => '11:00:00',
-        'departure_port' => $departurePort,
-        'arrival_port' => $arrivalPort,
-        'status' => $status,
-    ]);
+    return $ferry->schedules()->firstOrCreate(
+        ['departure_time' => $departureTime],
+        [
+            'arrival_time' => $arrivalTime,
+            'departure_port' => $departurePort,
+            'arrival_port' => $arrivalPort,
+        ],
+    );
 }
 
 /**
- * 1-room reservation, 3-night stay starting +3 days so +3, +4, +5 are the
- * on-island days, +3 is check-in (bookable for arrival ferry), +6 is
- * check-out (bookable for departure ferry under the inclusive rule).
+ * 1-room reservation, 3-night stay starting +3 days. +3 = check-in
+ * (arrival ferry), +4/+5 mid-stay, +6 = check-out (departure ferry)
+ * — all bookable under the inclusive window.
  */
 function fbSingleRoomReservation(User $customer, int $guests = 2): array
 {
@@ -127,29 +124,32 @@ test('unauthenticated request cannot list ferry bookings', function () {
 test('customer books the arrival ferry on check-in day', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer, guests: 2);
-    $schedule = fbSchedule(fbFerry(price: 40.0), $checkIn);
+    $slot = fbSlot(fbFerry(price: 40.0));
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])
         ->assertCreated()
         ->assertJsonPath('data.reservation_id', $reservation->id)
-        ->assertJsonPath('data.ferry_schedule_id', $schedule->id)
+        ->assertJsonPath('data.ferry_schedule_id', $slot->id)
+        ->assertJsonPath('data.travel_date', $checkIn)
         ->assertJsonPath('data.guests', 2)
         ->assertJsonPath('data.status', 'confirmed')
-        ->assertJsonPath('data.total_price', '80.00'); // 2 × $40
+        ->assertJsonPath('data.total_price', '80.00');
 });
 
 test('customer books the departure ferry on check-out day (inclusive window)', function () {
     $customer = fbCustomer();
     [$reservation, , $checkOut] = fbSingleRoomReservation($customer, guests: 2);
-    $schedule = fbSchedule(fbFerry(), $checkOut, departureTime: '16:00:00', departurePort: 'Isla Nublar', arrivalPort: 'Mainland');
+    $slot = fbSlot(fbFerry(), departureTime: '16:00:00', arrivalTime: '18:00:00', departurePort: 'Isla Nublar', arrivalPort: 'Mainland');
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkOut,
         'guests' => 2,
     ])->assertCreated();
 });
@@ -158,11 +158,12 @@ test('customer books a mid-stay day-trip ferry', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer, guests: 2);
     $midDay = Carbon::parse($checkIn)->addDay()->toDateString();
-    $schedule = fbSchedule(fbFerry(), $midDay);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $midDay,
         'guests' => 2,
     ])->assertCreated();
 });
@@ -171,40 +172,59 @@ test('booking a ferry before check-in is rejected', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
     $before = Carbon::parse($checkIn)->subDay()->toDateString();
-    $schedule = fbSchedule(fbFerry(), $before);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $before,
         'guests' => 2,
     ])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['ferry_schedule_id']);
+        ->assertJsonValidationErrors(['travel_date']);
 });
 
 test('booking a ferry after check-out is rejected', function () {
     $customer = fbCustomer();
     [$reservation, , $checkOut] = fbSingleRoomReservation($customer);
     $after = Carbon::parse($checkOut)->addDay()->toDateString();
-    $schedule = fbSchedule(fbFerry(), $after);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $after,
         'guests' => 2,
     ])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['ferry_schedule_id']);
+        ->assertJsonValidationErrors(['travel_date']);
+});
+
+test('past travel_date is rejected at validator', function () {
+    $customer = fbCustomer();
+    [$reservation] = fbSingleRoomReservation($customer);
+    $past = now()->subDay()->toDateString();
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $past,
+        'guests' => 2,
+    ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['travel_date']);
 });
 
 test('guests cannot exceed the reservation room-booking guests', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer, guests: 2);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 3,
     ])
         ->assertUnprocessable()
@@ -214,15 +234,16 @@ test('guests cannot exceed the reservation room-booking guests', function () {
 test('ferry capacity cap reports no available space', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer, guests: 2);
-    $ferry = fbFerry(capacity: 3); // only 3 seats on the vessel
-    $schedule = fbSchedule($ferry, $checkIn);
+    $ferry = fbFerry(capacity: 3);
+    $slot = fbSlot($ferry);
 
-    // Pre-fill 2 of 3 seats via another customer.
+    // Pre-fill 2 of 3 seats via another customer on the same (slot, date).
     $other = fbCustomer();
     [$otherRes] = fbSingleRoomReservation($other, guests: 2);
     FerryBooking::create([
         'reservation_id' => $otherRes->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
         'price_per_guest' => $ferry->ferryType->price,
@@ -231,7 +252,8 @@ test('ferry capacity cap reports no available space', function () {
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])
         ->assertUnprocessable()
@@ -239,70 +261,75 @@ test('ferry capacity cap reports no available space', function () {
         ->assertJsonFragment(['ferry_schedule_id' => ['There is no available space on this ferry.']]);
 });
 
-test('booking a cancelled ferry schedule is rejected', function () {
+test('capacity is per-date — same slot is bookable again on a different date', function () {
     $customer = fbCustomer();
-    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn, status: 'cancelled');
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer, guests: 2);
+    $secondDay = Carbon::parse($checkIn)->addDay()->toDateString();
+    $ferry = fbFerry(capacity: 3);
+    $slot = fbSlot($ferry);
 
+    // Day 1 takes 2 of 3 seats (a different reservation).
+    $other = fbCustomer();
+    [$otherRes] = fbSingleRoomReservation($other, guests: 2);
+    FerryBooking::create([
+        'reservation_id' => $otherRes->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+        'status' => 'confirmed',
+        'price_per_guest' => $ferry->ferryType->price,
+        'total_price' => (float) $ferry->ferryType->price * 2,
+    ]);
+
+    // Day 2 should have full capacity available.
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $secondDay,
         'guests' => 2,
-    ])
-        ->assertUnprocessable()
-        ->assertJsonValidationErrors(['ferry_schedule_id']);
+    ])->assertCreated();
 });
 
-test('booking a completed ferry schedule is rejected', function () {
+test('duplicate (reservation, schedule, date) rejected among confirmed rows', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn, status: 'completed');
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
-        'guests' => 2,
-    ])
-        ->assertUnprocessable()
-        ->assertJsonValidationErrors(['ferry_schedule_id']);
-});
-
-test('duplicate (reservation, schedule) rejected among confirmed rows', function () {
-    $customer = fbCustomer();
-    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
-
-    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
-        'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])->assertCreated();
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['ferry_schedule_id']);
 });
 
-test('same-day round trip on two different departures is allowed', function () {
+test('same-day round trip on two different slots is allowed', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
     $ferry = fbFerry();
-    $outbound = fbSchedule($ferry, $checkIn, departureTime: '09:00:00');
-    $inbound = fbSchedule($ferry, $checkIn, departureTime: '17:00:00', departurePort: 'Isla Nublar', arrivalPort: 'Mainland');
+    $outbound = fbSlot($ferry, departureTime: '09:00:00', arrivalTime: '11:00:00');
+    $inbound = fbSlot($ferry, departureTime: '17:00:00', arrivalTime: '19:00:00', departurePort: 'Isla Nublar', arrivalPort: 'Mainland');
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
         'ferry_schedule_id' => $outbound->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])->assertCreated();
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
         'ferry_schedule_id' => $inbound->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])->assertCreated();
 });
@@ -319,26 +346,28 @@ test('reservation with only cancelled rooms has empty seat pool → rejected', f
         now()->addDays(6)->toDateString(),
         status: 'cancelled',
     );
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($customer)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 1,
     ])
         ->assertUnprocessable()
-        ->assertJsonValidationErrors(['ferry_schedule_id']);
+        ->assertJsonValidationErrors(['travel_date']);
 });
 
 test('customer cannot attach a ferry booking to another users reservation', function () {
     $owner = fbCustomer();
     $stranger = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($owner);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $this->actingAs($stranger)->postJson('/api/ferry-bookings', [
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
     ])
         ->assertUnprocessable()
@@ -348,15 +377,16 @@ test('customer cannot attach a ferry booking to another users reservation', func
 test('customer cannot update a ferry booking', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -367,15 +397,16 @@ test('customer cannot update a ferry booking', function () {
 test('customer cannot cancel their own ferry booking (staff only)', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($customer)
@@ -387,15 +418,16 @@ test('customer cannot view another customers ferry booking', function () {
     $owner = fbCustomer();
     $stranger = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($owner);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($stranger)
@@ -406,16 +438,17 @@ test('customer cannot view another customers ferry booking', function () {
 test('ferry-manager can cancel any ferry booking', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
     $manager = fbFerryManager();
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -430,17 +463,18 @@ test('ferry-manager can cancel any ferry booking', function () {
 test('re-confirming a cancelled ferry booking is rejected', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
     $manager = fbFerryManager();
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'cancelled',
         'cancelled_at' => now(),
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -455,16 +489,17 @@ test('re-confirming a cancelled ferry booking is rejected', function () {
 test('ferry-manager can update booking status', function () {
     $customer = fbCustomer();
     [$reservation, $checkIn] = fbSingleRoomReservation($customer);
-    $schedule = fbSchedule(fbFerry(), $checkIn);
+    $slot = fbSlot(fbFerry());
     $manager = fbFerryManager();
 
     $booking = FerryBooking::create([
         'reservation_id' => $reservation->id,
-        'ferry_schedule_id' => $schedule->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
         'guests' => 2,
         'status' => 'confirmed',
-        'price_per_guest' => $schedule->ferry->ferryType->price,
-        'total_price' => (float) $schedule->ferry->ferryType->price * 2,
+        'price_per_guest' => $slot->ferry->ferryType->price,
+        'total_price' => (float) $slot->ferry->ferryType->price * 2,
     ]);
 
     $this->actingAs($manager)
@@ -477,13 +512,13 @@ test('superadmin sees every ferry booking', function () {
     [$rA, $dA] = fbSingleRoomReservation(fbCustomer());
     [$rB, $dB] = fbSingleRoomReservation(fbCustomer());
     $ferry = fbFerry();
-    $sA = fbSchedule($ferry, $dA);
-    $sB = fbSchedule($ferry, $dB, departureTime: '15:00:00');
+    $slot = fbSlot($ferry);
 
-    foreach ([[$rA, $sA], [$rB, $sB]] as [$r, $s]) {
+    foreach ([[$rA, $dA], [$rB, $dB]] as [$res, $date]) {
         FerryBooking::create([
-            'reservation_id' => $r->id,
-            'ferry_schedule_id' => $s->id,
+            'reservation_id' => $res->id,
+            'ferry_schedule_id' => $slot->id,
+            'travel_date' => $date,
             'guests' => 2,
             'status' => 'confirmed',
             'price_per_guest' => $ferry->ferryType->price,
@@ -506,12 +541,12 @@ test('customer index only returns their own ferry bookings', function () {
     [$rMine, $dMine] = fbSingleRoomReservation($me);
     [$rTheirs, $dTheirs] = fbSingleRoomReservation($other);
     $ferry = fbFerry();
-    $sMine = fbSchedule($ferry, $dMine);
-    $sTheirs = fbSchedule($ferry, $dTheirs, departureTime: '15:00:00');
+    $slot = fbSlot($ferry);
 
     FerryBooking::create([
         'reservation_id' => $rMine->id,
-        'ferry_schedule_id' => $sMine->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $dMine,
         'guests' => 2,
         'status' => 'confirmed',
         'price_per_guest' => $ferry->ferryType->price,
@@ -519,7 +554,8 @@ test('customer index only returns their own ferry bookings', function () {
     ]);
     FerryBooking::create([
         'reservation_id' => $rTheirs->id,
-        'ferry_schedule_id' => $sTheirs->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $dTheirs,
         'guests' => 2,
         'status' => 'confirmed',
         'price_per_guest' => $ferry->ferryType->price,

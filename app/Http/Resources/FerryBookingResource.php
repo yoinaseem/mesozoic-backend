@@ -13,6 +13,7 @@ class FerryBookingResource extends JsonResource
             'id' => $this->id,
             'reservation_id' => $this->reservation_id,
             'ferry_schedule_id' => $this->ferry_schedule_id,
+            'travel_date' => $this->travel_date?->format('Y-m-d'),
             'guests' => $this->guests,
             'status' => $this->status,
             'price_per_guest' => $this->price_per_guest,

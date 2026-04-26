@@ -12,6 +12,7 @@ return new class extends Migration
             $table->id();
             $table->foreignId('reservation_id')->constrained()->cascadeOnDelete();
             $table->foreignId('ferry_schedule_id')->constrained()->restrictOnDelete();
+            $table->date('travel_date');
             $table->unsignedSmallInteger('guests');
             $table->string('status', 16)->default('confirmed');
             $table->decimal('price_per_guest', 10, 2);
@@ -19,7 +20,8 @@ return new class extends Migration
             $table->timestamp('cancelled_at')->nullable();
             $table->timestamps();
 
-            $table->index(['ferry_schedule_id', 'status']);
+            $table->index(['ferry_schedule_id', 'travel_date', 'status']);
+            $table->index(['reservation_id', 'travel_date']);
             $table->index(['reservation_id', 'status']);
         });
     }
