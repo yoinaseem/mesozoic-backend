@@ -7,6 +7,7 @@ use App\Models\FerryBooking;
 use App\Models\FerrySchedule;
 use App\Models\FerryType;
 use App\Models\Reservation;
+use App\Models\ThemePark;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -87,6 +88,7 @@ class FerryBookingController extends Controller
         $travelDate = $data['travel_date'];
 
         $this->assertReservationOwnedByCaller($user, $reservation);
+        $this->assertParksOpenOn($travelDate);
         $this->assertReservationCoversTravelDate($reservation, $travelDate, $data['guests']);
         $this->assertNoDuplicatePerSchedule($reservation->id, $schedule->id, $travelDate);
         $this->assertFerryCapacityAvailable($type, $schedule, $travelDate, $data['guests']);
@@ -180,6 +182,24 @@ class FerryBookingController extends Controller
             throw ValidationException::withMessages([
                 'reservation_id' => ['This reservation does not belong to you.'],
             ]);
+        }
+    }
+
+    /**
+     * Ferries don't run on days the park is closed (resort-wide rule).
+     * "Closed" includes explicit hour-override close, missing weekday
+     * baseline (not_configured), and any park returning isOpenOn=false.
+     * With multiple parks, ALL parks must be open — revisit if a future
+     * design wants per-park ferry coupling.
+     */
+    private function assertParksOpenOn(string $travelDate): void
+    {
+        foreach (ThemePark::all() as $park) {
+            if (! $park->isOpenOn($travelDate)) {
+                throw ValidationException::withMessages([
+                    'travel_date' => ['Ferries are not available on this date because the park is closed.'],
+                ]);
+            }
         }
     }
 

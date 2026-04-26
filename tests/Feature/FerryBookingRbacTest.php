@@ -5,9 +5,11 @@ use App\Models\FerryBooking;
 use App\Models\FerrySchedule;
 use App\Models\FerryType;
 use App\Models\Hotel;
+use App\Models\ParkHourOverride;
 use App\Models\Reservation;
 use App\Models\RoomBooking;
 use App\Models\RoomType;
+use App\Models\ThemePark;
 use App\Models\User;
 use Carbon\Carbon;
 
@@ -99,6 +101,35 @@ function fbSlot(
             'arrival_port' => $arrivalPort,
         ],
     );
+}
+
+/**
+ * Seed an always-open park: a baseline opening hour for every weekday so
+ * that on any travel_date the park returns isOpenOn=true. The ferry-open
+ * guard iterates over every park, so we need this whenever we want the
+ * happy-path tests to run alongside a park.
+ */
+function fbSeedAlwaysOpenPark(): ThemePark
+{
+    /** @var ThemePark $park */
+    $park = ThemePark::create([
+        'name' => 'Mesozoic Park '.fake()->unique()->word(),
+        'description' => '...',
+        'capacity' => 1000,
+        'price' => 50,
+        'contact_email' => 'park@mesozoic.test',
+        'contact_phone' => '+960-000-0000',
+    ]);
+
+    foreach (['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'] as $day) {
+        $park->openingHours()->create([
+            'day' => $day,
+            'open_time' => '09:00:00',
+            'close_time' => '18:00:00',
+        ]);
+    }
+
+    return $park;
 }
 
 /**
@@ -533,6 +564,69 @@ test('superadmin sees every ferry booking', function () {
         ->getJson('/api/ferry-bookings')
         ->assertOk()
         ->assertJsonCount(2, 'data');
+});
+
+test('ferry booking rejected when park is closed via override on the travel date', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $park = fbSeedAlwaysOpenPark();
+    ParkHourOverride::create([
+        'park_id' => $park->id,
+        'date' => $checkIn,
+        'open_time' => null,
+        'close_time' => null,
+        'note' => 'Public holiday',
+    ]);
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['travel_date'])
+        ->assertJsonFragment(['travel_date' => ['Ferries are not available on this date because the park is closed.']]);
+});
+
+test('ferry booking rejected when park has no baseline for the travel date weekday (not_configured)', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    $park = ThemePark::create([
+        'name' => 'Mesozoic Park '.fake()->unique()->word(),
+        'description' => '...',
+        'capacity' => 1000,
+        'price' => 50,
+        'contact_email' => 'park@mesozoic.test',
+        'contact_phone' => '+960-000-0000',
+    ]);
+    // No opening hours seeded → every weekday returns not_configured/closed.
+    expect($park->isOpenOn($checkIn))->toBeFalse();
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])
+        ->assertUnprocessable()
+        ->assertJsonValidationErrors(['travel_date']);
+});
+
+test('ferry booking succeeds when park has baseline opening hours for the travel date', function () {
+    $customer = fbCustomer();
+    [$reservation, $checkIn] = fbSingleRoomReservation($customer);
+    fbSeedAlwaysOpenPark();
+    $slot = fbSlot(fbFerry());
+
+    $this->actingAs($customer)->postJson('/api/ferry-bookings', [
+        'reservation_id' => $reservation->id,
+        'ferry_schedule_id' => $slot->id,
+        'travel_date' => $checkIn,
+        'guests' => 2,
+    ])->assertCreated();
 });
 
 test('customer index only returns their own ferry bookings', function () {
