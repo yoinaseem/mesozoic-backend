@@ -16,10 +16,15 @@ class DatabaseSeeder extends Seeder
     {
         $this->call(RolesAndPermissionsSeeder::class);
 
-        // Fixture users and hotels are only seeded in development / test environments.
-        // Production seeds the roles and permissions catalogue only.
+        // Fixture users and catalogue data are only seeded in development /
+        // test environments. Production seeds the roles and permissions
+        // catalogue only.
         if (app()->environment(['local', 'testing'])) {
             $this->call(DevUsersSeeder::class);
+            $this->call(HotelCatalogueSeeder::class);
+            $this->call(BeachCatalogueSeeder::class);
+            $this->call(ParkCatalogueSeeder::class);
+            $this->call(FerryCatalogueSeeder::class);
         }
     }
 }
