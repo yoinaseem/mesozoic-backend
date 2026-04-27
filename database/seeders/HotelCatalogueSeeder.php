@@ -23,17 +23,17 @@ class HotelCatalogueSeeder extends Seeder
     {
         $hotels = [
             'Mesozoic Grand Hotel' => [
-                'address' => '1 Tyrannosaurus Way, Isla Nublar',
+                'address' => '1 Tyrannosaurus Way, Mesozoic Isle',
                 'description' => 'Flagship hotel on the island. Used as the default fixture for scoped-RBAC tests.',
                 'amenities' => ['wifi', 'pool', 'restaurant'],
             ],
             'Cretaceous Bay Resort' => [
-                'address' => '42 Velociraptor Cove, Isla Sorna',
+                'address' => '42 Velociraptor Cove, Mesozoic Isle',
                 'description' => 'Beachfront resort on the eastern shore with private bay access.',
                 'amenities' => ['wifi', 'pool', 'spa', 'restaurant', 'bar'],
             ],
-            'Jurassic Heights Lodge' => [
-                'address' => '88 Brachiosaurus Ridge, Highland Plateau',
+            'Triassic Heights Lodge' => [
+                'address' => '88 Brachiosaurus Ridge, Mesozoic Isle',
                 'description' => 'Mountain lodge above the canopy with panoramic plateau views.',
                 'amenities' => ['wifi', 'restaurant', 'gym', 'parking'],
             ],

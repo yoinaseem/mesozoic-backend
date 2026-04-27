@@ -24,7 +24,7 @@ class DevUsersSeeder extends Seeder
         $hotel = Hotel::firstOrCreate(
             ['name' => 'Mesozoic Grand Hotel'],
             [
-                'address'     => '1 Tyrannosaurus Way, Isla Nublar',
+                'address'     => '1 Tyrannosaurus Way, Mesozoic Isle',
                 'description' => 'Flagship hotel on the island. Used as the default fixture for scoped-RBAC tests.',
                 'amenities'   => ['wifi', 'pool', 'restaurant'],
             ],

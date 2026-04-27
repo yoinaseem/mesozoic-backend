@@ -28,7 +28,7 @@ class FerryCatalogueSeeder extends Seeder
                     'capacity'    => 120,
                     'price'       => 45.00,
                 ],
-                'ferries' => ['Isla Express 001', 'Isla Express 002'],
+                'ferries' => ['Mesozoic Express 001', 'Mesozoic Express 002'],
             ],
             [
                 'attrs' => [
@@ -37,18 +37,18 @@ class FerryCatalogueSeeder extends Seeder
                     'capacity'    => 80,
                     'price'       => 85.00,
                 ],
-                'ferries' => ['Isla Express 003', 'Isla Express 004'],
+                'ferries' => ['Mesozoic Express 003', 'Mesozoic Express 004'],
             ],
         ];
 
         // Five fixed slots per vessel. The last is an overnight crossing
         // (arrival_time < departure_time wraps to next day at read).
         $slots = [
-            ['departure' => '07:00:00', 'arrival' => '09:30:00', 'from' => 'Mainland Harbour', 'to' => 'Isla Nublar'],
-            ['departure' => '11:00:00', 'arrival' => '13:30:00', 'from' => 'Isla Nublar',      'to' => 'Mainland Harbour'],
-            ['departure' => '14:00:00', 'arrival' => '16:30:00', 'from' => 'Mainland Harbour', 'to' => 'Isla Sorna'],
-            ['departure' => '17:00:00', 'arrival' => '19:30:00', 'from' => 'Isla Sorna',       'to' => 'Mainland Harbour'],
-            ['departure' => '22:00:00', 'arrival' => '02:30:00', 'from' => 'Mainland Harbour', 'to' => 'Isla Nublar'], // overnight
+            ['departure' => '07:00:00', 'arrival' => '09:30:00', 'from' => 'Mainland Harbour', 'to' => 'Mesozoic Isle'],
+            ['departure' => '11:00:00', 'arrival' => '13:30:00', 'from' => 'Mesozoic Isle',    'to' => 'Mainland Harbour'],
+            ['departure' => '14:00:00', 'arrival' => '16:30:00', 'from' => 'Mainland Harbour', 'to' => 'Mesozoic Isle'],
+            ['departure' => '17:00:00', 'arrival' => '19:30:00', 'from' => 'Mesozoic Isle',    'to' => 'Mainland Harbour'],
+            ['departure' => '22:00:00', 'arrival' => '02:30:00', 'from' => 'Mainland Harbour', 'to' => 'Mesozoic Isle'], // overnight
         ];
 
         foreach ($types as $type) {
