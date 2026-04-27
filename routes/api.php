@@ -25,6 +25,7 @@ use App\Http\Controllers\RoomBookingController;
 use App\Http\Controllers\RoomController;
 use App\Http\Controllers\RoomTypeController;
 use App\Http\Controllers\ThemeParkController;
+use App\Http\Controllers\UploadController;
 use App\Http\Controllers\UserAccessController;
 use App\Http\Controllers\UserController;
 use Illuminate\Support\Facades\Route;
@@ -68,6 +69,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/auth/logout', [AuthController::class, 'logout']);
     Route::get('/auth/me', [AuthController::class, 'me']);
     Route::get('/auth/me/hotels', [AuthController::class, 'meHotels']);
+
+    // Generic image upload — stores on the `public` disk and returns the
+    // relative path + a usable URL. The frontend uploads first, then writes
+    // the returned `path` into a model's `image` / `images[]` string field.
+    Route::post('/uploads', [UploadController::class, 'store']);
 
     // Users — UserPolicy gates every verb (superadmin-only + self-access).
     Route::apiResource('users', UserController::class);

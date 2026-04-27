@@ -2,17 +2,21 @@
 
 namespace App\Http\Resources;
 
+use App\Http\Resources\Concerns\ResolvesImageUrl;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 class ThemeParkResource extends JsonResource
 {
+    use ResolvesImageUrl;
+
     public function toArray(Request $request): array
     {
         return [
             'id' => $this->id,
             'name' => $this->name,
             'images' => $this->images,
+            'image_urls' => $this->resolveImageUrls($this->images),
             'description' => $this->description,
             'capacity' => $this->capacity,
             'price' => $this->price !== null ? (float) $this->price : null,

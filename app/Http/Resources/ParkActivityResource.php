@@ -2,11 +2,14 @@
 
 namespace App\Http\Resources;
 
+use App\Http\Resources\Concerns\ResolvesImageUrl;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
 class ParkActivityResource extends JsonResource
 {
+    use ResolvesImageUrl;
+
     public function toArray(Request $request): array
     {
         return [
@@ -16,6 +19,7 @@ class ParkActivityResource extends JsonResource
             'description' => $this->description,
             'price' => $this->price !== null ? (float) $this->price : null,
             'image' => $this->image,
+            'image_url' => $this->resolveImageUrl($this->image),
             'duration' => $this->duration,
             'max_capacity' => $this->max_capacity,
             'is_all_day' => $this->is_all_day,
