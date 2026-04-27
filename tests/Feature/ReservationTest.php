@@ -1,6 +1,15 @@
 <?php
 
+use App\Models\BeachActivity;
+use App\Models\BeachActivitySchedule;
+use App\Models\BeachBooking;
+use App\Models\Ferry;
+use App\Models\FerryBooking;
+use App\Models\FerrySchedule;
 use App\Models\Hotel;
+use App\Models\ParkActivity;
+use App\Models\ParkActivityBooking;
+use App\Models\ParkActivitySchedule;
 use App\Models\ParkBooking;
 use App\Models\Reservation;
 use App\Models\RoomBooking;
@@ -429,6 +438,203 @@ test('?customer matches user.email substring', function () {
         ->assertOk()
         ->assertJsonCount(1, 'data')
         ->assertJsonPath('data.0.id', $aliceRes->id);
+});
+
+// --------------------------------------------------------------------------
+// Domain-manager visibility (DESD/RBAC fix). Park/beach/ferry managers must
+// see reservations that touch their domain at /reservations and via /show,
+// not just reservations they personally created. These tests build minimal
+// bookings in each domain and assert each manager's lens.
+// --------------------------------------------------------------------------
+
+function makeBeachBooking(Reservation $reservation, string $date, string $status = 'confirmed'): BeachBooking
+{
+    /** @var BeachActivity $activity */
+    $activity = BeachActivity::factory()->create(['capacity' => 12, 'price' => 60]);
+    /** @var BeachActivitySchedule $schedule */
+    $schedule = $activity->schedules()->create([
+        'activity_date' => $date,
+        'start_time'    => '09:00:00',
+        'end_time'      => '10:00:00',
+        'status'        => 'confirmed',
+    ]);
+
+    return BeachBooking::create([
+        'reservation_id'              => $reservation->id,
+        'beach_activity_schedule_id'  => $schedule->id,
+        'guests'                      => 2,
+        'status'                      => $status,
+        'price_per_guest'             => 60,
+        'total_price'                 => 120,
+        'cancelled_at'                => $status === 'cancelled' ? now() : null,
+    ]);
+}
+
+function makeFerryBooking(Reservation $reservation, string $travelDate, string $status = 'confirmed'): FerryBooking
+{
+    /** @var Ferry $ferry */
+    $ferry = Ferry::factory()->create();
+    $schedule = FerrySchedule::create([
+        'ferry_id'       => $ferry->id,
+        'departure_time' => '08:00:00',
+        'arrival_time'   => '10:00:00',
+        'departure_port' => 'Mainland Harbour',
+        'arrival_port'   => 'Mesozoic Isle',
+    ]);
+
+    return FerryBooking::create([
+        'reservation_id'    => $reservation->id,
+        'ferry_schedule_id' => $schedule->id,
+        'travel_date'       => $travelDate,
+        'guests'            => 2,
+        'status'            => $status,
+        'price_per_guest'   => 45,
+        'total_price'       => 90,
+        'cancelled_at'      => $status === 'cancelled' ? now() : null,
+    ]);
+}
+
+function makeParkActivityBooking(Reservation $reservation, ThemePark $park, string $date, string $status = 'confirmed'): ParkActivityBooking
+{
+    /** @var ParkActivity $activity */
+    $activity = ParkActivity::factory()->create([
+        'park_id'      => $park->id,
+        'max_capacity' => 20,
+        'price'        => 35,
+    ]);
+    $schedule = ParkActivitySchedule::create([
+        'park_activity_id' => $activity->id,
+        'date'             => $date,
+        'start_time'       => '10:00:00',
+        'end_time'         => '11:00:00',
+        'status'           => 'scheduled',
+    ]);
+
+    return ParkActivityBooking::create([
+        'reservation_id'             => $reservation->id,
+        'park_activity_schedule_id'  => $schedule->id,
+        'guests'                     => 2,
+        'status'                     => $status,
+        'price_per_guest'            => 35,
+        'total_price'                => 70,
+        'cancelled_at'               => $status === 'cancelled' ? now() : null,
+    ]);
+}
+
+function domainManager(string $role): User
+{
+    $u = User::factory()->create();
+    $u->assignRole($role);
+
+    return $u;
+}
+
+test('park-manager sees reservations touched by park bookings, not unrelated ones', function () {
+    [, $type] = seedHotelAndType();
+    $park     = ThemePark::factory()->create();
+
+    $owner = customerActor();
+
+    $parkRes = Reservation::create(['user_id' => $owner->id]);
+    makeParkBooking($parkRes, $park, '2026-06-01');
+
+    $activityRes = Reservation::create(['user_id' => $owner->id]);
+    makeParkActivityBooking($activityRes, $park, '2026-06-02');
+
+    $beachRes = Reservation::create(['user_id' => $owner->id]);
+    makeBeachBooking($beachRes, '2026-06-03');
+
+    $roomOnly = Reservation::create(['user_id' => $owner->id]);
+    makeBooking($roomOnly, $type, '2026-06-04', '2026-06-05');
+
+    $manager = domainManager('park-manager');
+
+    $ids = $this->actingAs($manager)
+        ->getJson('/api/reservations')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->toContain($parkRes->id, $activityRes->id)
+        ->not->toContain($beachRes->id)
+        ->not->toContain($roomOnly->id);
+});
+
+test('beach-manager sees reservations touched by beach bookings, not unrelated ones', function () {
+    [, $type] = seedHotelAndType();
+    $park     = ThemePark::factory()->create();
+    $owner    = customerActor();
+
+    $beachRes = Reservation::create(['user_id' => $owner->id]);
+    makeBeachBooking($beachRes, '2026-06-01');
+
+    $parkRes = Reservation::create(['user_id' => $owner->id]);
+    makeParkBooking($parkRes, $park, '2026-06-02');
+
+    $roomOnly = Reservation::create(['user_id' => $owner->id]);
+    makeBooking($roomOnly, $type, '2026-06-04', '2026-06-05');
+
+    $manager = domainManager('beach-manager');
+
+    $ids = $this->actingAs($manager)
+        ->getJson('/api/reservations')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->toContain($beachRes->id)
+        ->not->toContain($parkRes->id)
+        ->not->toContain($roomOnly->id);
+});
+
+test('ferry-manager sees reservations touched by ferry bookings, not unrelated ones', function () {
+    [, $type] = seedHotelAndType();
+    $park     = ThemePark::factory()->create();
+    $owner    = customerActor();
+
+    $ferryRes = Reservation::create(['user_id' => $owner->id]);
+    makeFerryBooking($ferryRes, '2026-06-01');
+
+    $parkRes = Reservation::create(['user_id' => $owner->id]);
+    makeParkBooking($parkRes, $park, '2026-06-02');
+
+    $beachRes = Reservation::create(['user_id' => $owner->id]);
+    makeBeachBooking($beachRes, '2026-06-03');
+
+    $manager = domainManager('ferry-manager');
+
+    $ids = $this->actingAs($manager)
+        ->getJson('/api/reservations')
+        ->assertOk()
+        ->json('data.*.id');
+
+    expect($ids)->toContain($ferryRes->id)
+        ->not->toContain($parkRes->id)
+        ->not->toContain($beachRes->id);
+});
+
+test('park-manager can show a park-touched reservation', function () {
+    $park    = ThemePark::factory()->create();
+    $owner   = customerActor();
+    $manager = domainManager('park-manager');
+
+    $r = Reservation::create(['user_id' => $owner->id]);
+    makeParkBooking($r, $park, '2026-06-01');
+
+    $this->actingAs($manager)
+        ->getJson("/api/reservations/{$r->id}")
+        ->assertOk()
+        ->assertJsonPath('data.id', $r->id);
+});
+
+test('park-manager cannot show an unrelated beach-only reservation', function () {
+    $owner   = customerActor();
+    $manager = domainManager('park-manager');
+
+    $r = Reservation::create(['user_id' => $owner->id]);
+    makeBeachBooking($r, '2026-06-01');
+
+    $this->actingAs($manager)
+        ->getJson("/api/reservations/{$r->id}")
+        ->assertForbidden();
 });
 
 test('embedded reservation on /room-bookings does not include derived fields', function () {

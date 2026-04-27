@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Http\Resources\ReservationResource;
 use App\Models\Reservation;
+use App\Models\User;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Foundation\Auth\Access\AuthorizesRequests;
 use Illuminate\Http\Request;
@@ -40,15 +41,7 @@ class ReservationController extends Controller
 
         $query = Reservation::query();
         $this->applyDerivedSelects($query);
-
-        if ($user->hasRole('superadmin')) {
-            // no scope
-        } elseif ($user->hasRole('hotel-manager')) {
-            $managedHotelIds = $user->managedHotels()->pluck('hotels.id');
-            $query->whereHas('roomBookings', fn ($q) => $q->whereIn('hotel_id', $managedHotelIds));
-        } else {
-            $query->where('user_id', $user->id);
-        }
+        $this->applyVisibilityScope($query, $user);
 
         if ($status = $request->query('status')) {
             $this->applyStatusFilter($query, $status);
@@ -79,6 +72,52 @@ class ReservationController extends Controller
         $this->applyDerivedSelects($query);
 
         return new ReservationResource($query->firstOrFail());
+    }
+
+    /**
+     * Restrict the query to reservations the caller is allowed to see.
+     *
+     *  - superadmin: every reservation.
+     *  - everyone else: own reservations (where they are the customer) PLUS
+     *    any reservation that touches a domain they manage:
+     *      hotel-manager → reservations with room-bookings in their managed
+     *                      hotels (pivot-scoped).
+     *      park-manager  → any reservation with park-bookings or
+     *                      park-activity-bookings (no per-park pivot).
+     *      beach-manager → any reservation with beach-bookings.
+     *      ferry-manager → any reservation with ferry-bookings.
+     *
+     * Scopes are ORed together so a user holding multiple roles (e.g. a
+     * hotel-manager who is also a customer of their own resort) gets the
+     * union of every applicable lens.
+     */
+    private function applyVisibilityScope(Builder $query, User $user): void
+    {
+        if ($user->hasRole('superadmin')) {
+            return;
+        }
+
+        $query->where(function (Builder $q) use ($user) {
+            $q->where('user_id', $user->id);
+
+            if ($user->hasRole('hotel-manager')) {
+                $managedHotelIds = $user->managedHotels()->pluck('hotels.id');
+                $q->orWhereHas('roomBookings', fn ($r) => $r->whereIn('hotel_id', $managedHotelIds));
+            }
+
+            if ($user->hasRole('park-manager')) {
+                $q->orWhereHas('parkBookings');
+                $q->orWhereHas('parkActivityBookings');
+            }
+
+            if ($user->hasRole('beach-manager')) {
+                $q->orWhereHas('beachBookings');
+            }
+
+            if ($user->hasRole('ferry-manager')) {
+                $q->orWhereHas('ferryBookings');
+            }
+        });
     }
 
     /**
